@@ -35,8 +35,15 @@ export class RuleEvaluator {
     return this.ruleSet;
   }
 
-  /** Decide one tick. */
-  step(conditions: Conditions): Decision {
+  /**
+   * Decide one tick.
+   *
+   * `trace` controls whether the suppressed/cooling arrays are populated.
+   * They exist for the UI, and GA replay never reads them - measured, the
+   * per-tick allocation was 2.26ms of a 3.68ms 6000-tick replay, so scoring
+   * passes trace=false. The UI path keeps the full explanation.
+   */
+  step(conditions: Conditions, trace = true): Decision {
     const t = this.tick++;
     const { rules, order } = this.ruleSet;
 
@@ -71,11 +78,15 @@ export class RuleEvaluator {
 
       const until = this.cooldownUntil.get(idx) ?? 0;
       if (t < until) {
-        cooling.push(idx);
+        if (trace) cooling.push(idx);
         continue;
       }
-      if (chosen === null) chosen = idx;
-      else suppressed.push(idx);
+      if (chosen === null) {
+        chosen = idx;
+        if (!trace) break; // nothing below can win; stop early
+      } else if (trace) {
+        suppressed.push(idx);
+      }
     }
 
     if (chosen === null) {

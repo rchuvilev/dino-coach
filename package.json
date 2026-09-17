@@ -1,0 +1,14 @@
+{
+  "name": "ai-mentat-blueprint",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Tick-loop agent framework: perception heads -> priority rules -> evolved decisions",
+  "scripts": {
+    "test": "bun test test/",
+    "demo": "bun run examples/demo.ts"
+  },
+  "dependencies": {
+    "@tensorflow/tfjs": "^4.22.0",
+    "@tensorflow-models/knn-classifier": "^1.2.6"
+  }
+}

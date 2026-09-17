@@ -49,6 +49,38 @@ export function normalize(values: number[]): number[] {
   return values.map((v) => (v - mean) / sd);
 }
 
+/** How a prop's delta converts to reward. Mirrors PropSpec, without the fns. */
+export interface RewardRule {
+  rating: number;
+  countDirection?: "up" | "down" | "both";
+  maxDelta?: number;
+}
+
+/** Accept a bare number as shorthand for {rating, both}. */
+export type RewardSpec = number | RewardRule;
+
+function asRule(s: RewardSpec): RewardRule {
+  return typeof s === "number" ? { rating: s } : s;
+}
+
+/**
+ * Reward contribution of one prop's change.
+ *
+ * Exported because this is the single most error-prone line in the system
+ * and it deserves direct tests: a discontinuity credited as a consequence
+ * inverts the incentive it was meant to express.
+ */
+export function deltaReward(before: number, after: number, spec: RewardSpec): number {
+  const rule = asRule(spec);
+  const delta = after - before;
+  if (delta === 0) return 0;
+  if (rule.maxDelta !== undefined && Math.abs(delta) > rule.maxDelta) return 0;
+  const dir = rule.countDirection ?? "both";
+  if (dir === "up" && delta < 0) return 0;
+  if (dir === "down" && delta > 0) return 0;
+  return delta * rule.rating;
+}
+
 export class TraceRecorder {
   private ticks: TraceTick[] = [];
   private prev: StateProps | null = null;
@@ -66,15 +98,15 @@ export class TraceRecorder {
     props: StateProps,
     firedRule: number | null,
     action: string | null,
-    propRatings: Record<string, number>,
+    propRatings: Record<string, RewardSpec>,
   ): number {
     let reward = 0;
     if (this.prev) {
-      for (const [key, rating] of Object.entries(propRatings)) {
+      for (const [key, spec] of Object.entries(propRatings)) {
         const before = this.prev[key];
         const after = props[key];
         if (before === undefined || after === undefined) continue;
-        reward += (after - before) * rating;
+        reward += deltaReward(before, after, spec);
       }
     }
     this.prev = { ...props };

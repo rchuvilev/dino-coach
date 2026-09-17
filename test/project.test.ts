@@ -74,8 +74,19 @@ describe("derivations", () => {
     expect(ruleSetOf(base()).order).toEqual([0, 1]);
   });
 
-  test("ratingsOf extracts just the weights", () => {
-    expect(ratingsOf(base())).toEqual({ hp: 1, ammo: 0.5 });
+  test("ratingsOf carries the reward rule, not just the weight", () => {
+    const r = ratingsOf(base());
+    expect(r.hp!.rating).toBe(1);
+    expect(r.ammo!.rating).toBe(0.5);
+  });
+
+  test("ratingsOf forwards countDirection and maxDelta", () => {
+    const p = base();
+    p.props.hp!.countDirection = "down";
+    p.props.hp!.maxDelta = 50;
+    const r = ratingsOf(p);
+    expect(r.hp!.countDirection).toBe("down");
+    expect(r.hp!.maxDelta).toBe(50);
   });
 });
 

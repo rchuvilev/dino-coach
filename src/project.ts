@@ -1,3 +1,4 @@
+import type { RewardRule } from "./kernel/trace.js";
 import type { Rule, RuleSet, StateProps } from "./rules/types.js";
 
 /**
@@ -42,6 +43,28 @@ export interface PropSpec {
   /** for the UI meter */
   min?: number;
   max?: number;
+
+  /**
+   * Only count changes in this direction. This is NOT a nicety - it is the
+   * fix for a real bug found in the demo: enemyHp rated -5 reset from 0 to
+   * 100 on each kill, registering +100 => -500 reward PER KILL, so the
+   * rating punished exactly the behaviour it was meant to reward. 120 kills
+   * scored worse than standing still.
+   *
+   * Any prop read from a screenshot has the same hazard (respawns, scene
+   * changes, HUD occlusion), so directional deltas are the default defence.
+   *  - "down": credit only decreases (enemy hp, distance to goal)
+   *  - "up":   credit only increases (score, kills)
+   *  - "both": credit any change (hp, ammo)
+   */
+  countDirection?: "up" | "down" | "both";
+
+  /**
+   * Ignore a single-tick jump larger than this. A prop that leaps by more
+   * than any plausible per-tick change is a discontinuity (respawn, level
+   * load, OCR misread), not a consequence of the last action.
+   */
+  maxDelta?: number;
 }
 
 export type ConditionFn = (props: StateProps, prev: StateProps | null) => boolean;
@@ -53,10 +76,13 @@ export function ruleSetOf(p: Project): RuleSet {
   return { rules: p.rules, order: p.order ?? p.rules.map((_, i) => i) };
 }
 
-/** The prop -> rating map the TraceRecorder needs. */
-export function ratingsOf(p: Project): Record<string, number> {
+/** The prop -> reward-rule map the TraceRecorder needs. */
+export function ratingsOf(p: Project): Record<string, RewardRule> {
   return Object.fromEntries(
-    Object.entries(p.props).map(([k, v]) => [k, v.rating]),
+    Object.entries(p.props).map(([k, v]) => [
+      k,
+      { rating: v.rating, countDirection: v.countDirection, maxDelta: v.maxDelta },
+    ]),
   );
 }
 

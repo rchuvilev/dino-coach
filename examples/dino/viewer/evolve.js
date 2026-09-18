@@ -115,9 +115,14 @@ export function windowAt(g, speed) {
 
 function mutate(g, rnd) {
   const n = { ...g };
+  // 15% of mutations are LARGE. With only small nudges the population never
+  // escaped the genome found in generation 1 - measured flat for 27
+  // generations. A heavy tail in the step size is the standard fix.
+  const heavy = rnd() < 0.15;
+  const scale = heavy ? 3.5 : 1;
   const pick = Math.floor(rnd() * 10);
-  const nudge = () => Math.round((rnd() - 0.5) * 30);
-  const slope = () => +((rnd() - 0.5) * 4).toFixed(2);
+  const nudge = () => Math.round((rnd() - 0.5) * 30 * scale);
+  const slope = () => +((rnd() - 0.5) * 4 * scale).toFixed(2);
   if (pick === 0) n.loA = n.loA + nudge();
   else if (pick === 1) n.widthA = n.widthA + nudge();
   else if (pick === 2) n.duck = n.duck + nudge();
@@ -279,6 +284,9 @@ function seedPopulation() {
         mean: samples.length ? Math.round(samples.reduce((a, b) => a + b, 0) / samples.length) : 0,
         samples,
         median: samples.length ? sorted[Math.floor(sorted.length / 2)] : undefined,
+        // telemetry must ride along: fitnessOf() needs the failure mix, and
+        // dropping it here made the whole adjustment a no-op (fit === best).
+        tel: c.tel,
         elite: true,
       });
     }
@@ -308,7 +316,7 @@ function seedPopulation() {
   let guard = 0;
   while (out.length < POP && guard++ < POP * 20) {
     let g;
-    if (out.length >= 2 && rnd() < 0.85) {
+    if (out.length >= 2 && rnd() < 0.72) {
       const a = out[Math.floor(rnd() * out.length)];
       const b = out[Math.floor(rnd() * out.length)];
       const winner = (a.median || a.mean || 0) >= (b.median || b.mean || 0) ? a : b;
@@ -468,6 +476,7 @@ export function recordEpisode(cand, dist, pop, bandDist, telemetry) {
         // disabled both ranking and generation close.
         samples: (c.samples || []).slice(-EPISODES_PER),
         bandTotals: c.bandTotals,
+        tel: c.tel,
         median: c.median,
       }));
   }
@@ -483,13 +492,43 @@ export function generationComplete(pop) {
   return pop.filter((c) => !c.ctrl).every((c) => (c.runs || 0) >= EPISODES_PER);
 }
 
+/**
+ * Fitness = median distance, adjusted by the failure profile.
+ *
+ * Rationale: at cv 0.50 the median of 4 episodes cannot order genomes whose
+ * true medians differ by less than ~30%, so the search stalls on noise. The
+ * death-cause mix is measured over every episode and is far less noisy than
+ * the score, so it can break those ties toward genomes that fail in
+ * recoverable ways rather than unrecoverable ones.
+ *
+ * `missed` (still airborne when the window opened) is weighted worst: it is
+ * the class the agent has no answer to. `early` is penalised less because a
+ * genome that at least attempts the jump is one mutation from correct timing.
+ */
+export function fitnessOf(c) {
+  const base = c.median || 0;
+  const t = c.tel;
+  if (!t || !t.causes) return base;
+  const total = Object.values(t.causes).reduce((a, b) => a + b, 0);
+  if (!total) return base;
+  const rate = (k) => (t.causes[k] || 0) / total;
+  const missed = rate("missed") + rate("wide_missed");
+  const early = rate("early") + rate("wide_early");
+  // clearance rates are direct evidence the policy HANDLES a class
+  const wideBonus = t.wideClearRate === null || t.wideClearRate === undefined ? 0 : t.wideClearRate;
+  const birdBonus = t.birdClearRate === null || t.birdClearRate === undefined ? 0 : t.birdClearRate;
+  // multiplicative, so it scales with the score rather than swamping it
+  const factor = 1 - 0.25 * missed - 0.10 * early + 0.08 * wideBonus + 0.05 * birdBonus;
+  return Math.round(base * Math.max(0.5, Math.min(1.25, factor)));
+}
+
 export function closeGeneration(pop) {
   // MEDIAN, not mean: the score distribution has a long upper tail (12 runs
   // of one genome: 6340..18777), so a mean rewards luck. The median moves
   // only when a genome is genuinely better more than half the time.
   const evolved = pop
     .filter((c) => !c.ctrl)
-    .sort((a, b) => (b.median || b.mean) - (a.median || a.mean));
+    .sort((a, b) => fitnessOf(b) - fitnessOf(a));
   const controls = pop.filter((c) => c.ctrl);
   const bestCtrl = Math.max(0, ...controls.map((c) => c.median || c.mean));
   S.generation++;
@@ -508,6 +547,12 @@ export function closeGeneration(pop) {
     best: (() => {
       const measured = evolved.filter((c) => (c.runs || 0) > 0 && c.median !== undefined);
       return measured.length ? measured[0].median : 0;
+    })(),
+    // fitness of that winner, so a flat median with improving failure mix is
+    // still visible as progress
+    fit: (() => {
+      const measured = evolved.filter((c) => (c.runs || 0) > 0 && c.median !== undefined);
+      return measured.length ? fitnessOf(measured[0]) : 0;
     })(),
     control: bestCtrl,
     episodes: S.episodes,

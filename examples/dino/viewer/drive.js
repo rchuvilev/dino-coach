@@ -724,6 +724,14 @@ if (resetBtn) {
       localStorage.removeItem("dino-evolve-v1");
       localStorage.removeItem("dino-evolve-v1-slot");
     } catch { /* storage may be unavailable */ }
+    // Also clear the GAME's own record. It survives restarts by design, so
+    // after a Reset our stats start at zero while the canvas still shows an
+    // old HI - which reads as a record that refuses to update.
+    const rr = R();
+    if (rr) {
+      rr.highestScore = 0;
+      if (rr.distanceMeter) rr.distanceMeter.setHighScore(0);
+    }
     resetAll();
     pop = seedPopulation();
     idx = 0;

@@ -9,6 +9,7 @@
  *  - the agent sees only rendered frames, never world state
  */
 import { evolve } from "../../src/evolve/ga.js";
+import { assessAgainstControls, verifyLiveness } from "../../src/evolve/liveness.js";
 import { applyGenome, genomeOf, type Genome } from "../../src/evolve/genome.js";
 import type { Rule, TraceTick } from "../../src/rules/types.js";
 import { RuleEvaluator } from "../../src/rules/evaluator.js";
@@ -106,7 +107,30 @@ const doNothing: Genome = { order: [0, 1, 2, 3], actions: ["run", "run", "run", 
 const alwaysJump: Genome = { order: [3, 0, 1, 2], actions: ["jump", "jump", "jump", "jump"] };
 const alwaysDuck: Genome = { order: [3, 0, 1, 2], actions: ["duck", "duck", "duck", "duck"] };
 
-console.log("=== baselines (mean distance over 5 train seeds) ===");
+// --- liveness gate: prove the target runs AND responds before scoring ----
+// Not optional. Skipping this produced a plausible 8361 score from a target
+// that was not running, and three downstream wrong conclusions.
+{
+  let probe = new RunnerWorld(1);
+  const live = await verifyLiveness({
+    reset: () => {
+      probe = new RunnerWorld(1);
+    },
+    step: (a) => void probe.step(a as RunnerAction),
+    observe: () => ({ d: probe.distance, y: Math.round(probe.y), n: probe.obstacles.length }),
+    progress: (s) => s.d,
+    probeAction: "jump",
+    idleAction: "run",
+  });
+  console.log(`=== liveness: ${live.alive ? "OK" : "FAILED"} (advances=${live.advances}, inputWorks=${live.actionHasEffect}, states=${live.distinctStates}) ===`);
+  if (!live.alive) {
+    console.error("target is not usable for evaluation:");
+    for (const r of live.reasons) console.error(`  - ${r}`);
+    process.exit(1);
+  }
+}
+
+console.log("\n=== baselines (mean distance over 5 train seeds) ===");
 const bDo = scoreOn(doNothing, TRAIN_SEEDS);
 const bJump = scoreOn(alwaysJump, TRAIN_SEEDS);
 const bDuck = scoreOn(alwaysDuck, TRAIN_SEEDS);
@@ -116,10 +140,9 @@ console.log(`  always-jump  (control): ${bJump}`);
 console.log(`  always-duck  (control): ${bDuck}`);
 console.log(`  human seed rules      : ${bSeed}`);
 
-if (bSeed <= Math.max(bDo, bJump, bDuck)) {
-  console.log("\n  !! a control matches or beats the seed - the metric is suspect");
-} else {
-  console.log(`\n  seed beats best control by ${(bSeed / Math.max(bDo, bJump, bDuck)).toFixed(2)}x`);
+{
+  const a = assessAgainstControls(bSeed, { doNothing: bDo, alwaysJump: bJump, alwaysDuck: bDuck });
+  console.log(`\n  ${a.verdict}`);
 }
 
 // --- collect traces with exploration, so replay has alternatives ----------

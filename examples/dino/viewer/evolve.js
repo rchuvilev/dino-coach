@@ -487,12 +487,22 @@ export function closeGeneration(pop) {
   const controls = pop.filter((c) => c.ctrl);
   const bestCtrl = Math.max(0, ...controls.map((c) => c.median || c.mean));
   S.generation++;
-  S.population = evolved
-    .slice(0, ELITE)
-    .map((c) => ({ g: c.g, mean: c.mean, median: c.median, best: c.best }));
+  // Only the genome survives. A median is a MEASUREMENT of one generation's
+  // episodes and must never be carried into the next - doing so froze the
+  // reported best at 33055 for 31 consecutive generations while real
+  // candidates were scoring 10012..22436.
+  S.population = evolved.slice(0, ELITE).map((c) => ({
+    g: c.g,
+    lastMedian: c.median,   // provenance only, never used for ranking
+    fromGen: S.generation,
+  }));
   S.history.push({
     gen: S.generation,
-    best: evolved[0] ? evolved[0].median || evolved[0].mean : 0,
+    // only count candidates with real episodes this generation
+    best: (() => {
+      const measured = evolved.filter((c) => (c.runs || 0) > 0 && c.median !== undefined);
+      return measured.length ? measured[0].median : 0;
+    })(),
     control: bestCtrl,
     episodes: S.episodes,
   });

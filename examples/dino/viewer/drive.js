@@ -542,13 +542,16 @@ $("run").onclick = () => {
         : Math.min(240, Math.max(1, Math.round((elapsed / (1000 / 60)) * rate)));
     for (let i = 0; i < owed; i++) frame();
   };
+  // The harness PATCHES window.requestAnimationFrame to queue into __CLOCK,
+  // so using it here deadlocks: the pump waits on a frame that only the pump
+  // can deliver. Use the real one captured at boot.
+  const realRAF = window.__CLOCK.realRAF || ((cb) => setTimeout(() => cb(performance.now()), 16));
   const rafPump = () => {
     if (!running) return;
-    // Only pump from rAF when running faster than real time. At 1x the
-    // setInterval tick alone gives ~60 game frames/sec; adding rAF would
-    // double it and stop being "real speed".
-    if (!rateEl || Number(rateEl.value) > 2) pump();
-    rafId = window.requestAnimationFrame(rafPump);
+    // Only pump from rAF above real time; at 1x the interval alone gives
+    // ~60 game frames/sec and adding rAF would stop it being "real speed".
+    if (!rateEl || Number(rateEl.value) > 2 || Number(rateEl.value) === 0) pump();
+    rafId = realRAF(rafPump);
   };
   painter = setInterval(() => {
     paint();
@@ -560,12 +563,15 @@ $("run").onclick = () => {
   }, 50);
   // At max rate, drive from a 0ms timer so we get many SMALL bursts rather
   // than one large one - same throughput, dense decisions.
+  // Self-RESTARTING, not self-terminating: it previously stopped for good if
+  // the rate was not 0 at the instant it fired, so switching to max mid-run
+  // never resumed the fast path.
   const fastTick = () => {
     if (!running) return;
     if (rateEl && Number(rateEl.value) === 0) {
       for (let k = 0; k < 40; k++) pump();
-      setTimeout(fastTick, 0);
     }
+    setTimeout(fastTick, 0);
   };
   setTimeout(fastTick, 0);
   loop = setInterval(() => {

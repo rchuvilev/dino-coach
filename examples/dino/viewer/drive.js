@@ -243,6 +243,10 @@ function decide(s, g) {
   const effHi = w.lo + (w.hi - w.lo) * Math.max(0.15, Math.min(1, lateFrac));
   // TTC window when the genome has one, else the legacy pixel window. Both
   // are evolvable; zero ttcLo disables it so the GA can fall back.
+  // TIME-TO-COLLISION, computed HERE because this is where it is used.
+  // Previously declared inside withTtc() and referenced from this scope,
+  // which threw "ttc is not defined" on the first decision.
+  const ttc = s.gap < 9000 && s.speed > 0 ? s.gap / s.speed : 9999;
   const useTtc = (g.ttcLo || 0) > 0;
   const canJump = useTtc
     ? ttc < 9999 && !s.high && ttc >= g.ttcLo && ttc <= g.ttcHi && !s.airborne

@@ -195,7 +195,8 @@ function renderTable() {
     else if (c.median && c.median === top) tr.className = "best";
     tr.innerHTML =
       `<td>${candName(c)}${c.elite ? " ★" : ""}</td><td class="n">${c.runs}</td>` +
-      `<td class="n">${c.median || "—"}</td><td class="n">${c.best || "—"}</td>`;
+      `<td class="n">${c.median ? Math.round(c.median * 0.025) : "—"}</td>` +
+      `<td class="n">${c.best ? Math.round(c.best * 0.025) : "—"}</td>`;
     t.appendChild(tr);
   });
   const St = currentState();
@@ -205,8 +206,13 @@ function renderTable() {
     .map(([k, v]) => `${k} ${Math.round(100 * v / total)}%`).join(" · ");
   const causesEl = $("causes");
   if (causesEl) causesEl.textContent = topCauses || "no deaths recorded yet";
+  // POINTS, matching the game's own readout (distance * 0.025). Reporting
+  // distance here while the canvas showed points made a 361-point confirmed
+  // median look like a ceiling against a 1191-point game record.
+  const pts = (d) => Math.round((d || 0) * 0.025);
   $("evoinfo").textContent =
-    `s${S.sessions} · gen ${S.generation} · ep ${S.episodes} · typical ${S.bestMedian || 0} · luckiest ${S.bestEver}`;
+    `s${S.sessions} · gen ${S.generation} · ep ${S.episodes} · ` +
+    `typical ${pts(S.bestMedian)}pts · best ${pts(S.bestEver)}pts`;
 }
 
 function drawChart() {
@@ -366,7 +372,7 @@ function frame() {
       bandDist = BANDS.map(() => 0);
       lastDist = 0;
       epInCand++;
-      log(`${candName(cand)} -> ${dist}`);
+      log(`${candName(cand)} -> ${Math.round(dist * 0.025)}pts`);
       tableDirty = true;
 
       // Drive on cand.runs, which PERSISTS, not on epInCand which resets on
@@ -446,7 +452,7 @@ function paint() {
   if (!latest) return;
   const { s, d, cand } = latest;
   $("act").textContent = d.action;
-  $("dist").textContent = Math.max(0, s.distance - epStart);
+  $("dist").textContent = Math.round(Math.max(0, s.distance - epStart) * 0.025);
   $("v-gap").textContent = s.gap < 99999 ? Math.round(s.gap) : "—";
   $("v-spd").textContent = s.speed.toFixed(1);
   $("m-gap").style.width = s.gap < 99999 ? `${Math.max(0, 100 - s.gap / 4)}%` : "0%";

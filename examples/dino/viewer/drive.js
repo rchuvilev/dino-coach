@@ -438,10 +438,16 @@ $("run").onclick = () => {
     // freeze followed by a teleport.
     // rate 0 == MAX: unpaced, CPU-bound. Anything else is wall-clock paced
     // so 1x really is real time.
+    // Each frame() call is one DECISION plus one simulated frame, so the
+    // agent is never blind between frames no matter how fast we pump.
+    // Measured: batching frames between decisions cost 5x performance.
+    // Burst is capped at 4: measured, spacing decisions 8 frames apart costs
+    // 3.5x performance (median 4348 vs 15398), while 4 is indistinguishable
+    // from 1. Max rate therefore pumps MORE OFTEN rather than more per pump.
     const owed =
       rate === 0
-        ? 4000
-        : Math.min(240, Math.max(1, Math.round((elapsed / (1000 / 60)) * rate)));
+        ? 4
+        : Math.min(4, Math.max(1, Math.round((elapsed / (1000 / 60)) * rate)));
     for (let i = 0; i < owed; i++) frame();
   };
   const rafPump = () => {
@@ -460,6 +466,16 @@ $("run").onclick = () => {
       drawChart();
     }
   }, 50);
+  // At max rate, drive from a 0ms timer so we get many SMALL bursts rather
+  // than one large one - same throughput, dense decisions.
+  const fastTick = () => {
+    if (!running) return;
+    if (rateEl && Number(rateEl.value) === 0) {
+      for (let k = 0; k < 40; k++) pump();
+      setTimeout(fastTick, 0);
+    }
+  };
+  setTimeout(fastTick, 0);
   loop = setInterval(() => {
     pump();
     // watchdog: if the odometer has not moved between ticks, the game lost
@@ -570,6 +586,12 @@ if (importBtn && fileEl) {
 const resetBtn = $("reset");
 if (resetBtn) {
   resetBtn.onclick = () => {
+    // TOTAL reset: the rolling autosave AND the explicit save slot. Leaving
+    // the slot behind meant a later Load silently resurrected old learning.
+    try {
+      localStorage.removeItem("dino-evolve-v1");
+      localStorage.removeItem("dino-evolve-v1-slot");
+    } catch { /* storage may be unavailable */ }
     resetAll();
     pop = seedPopulation();
     idx = 0;

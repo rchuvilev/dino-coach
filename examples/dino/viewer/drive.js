@@ -148,12 +148,21 @@ function read() {
 /** Arc velocities for the current genome, set by decide(). */
 let lastArc = { low: 8, high: 12 };
 
+/** True while a jump we issued is still in the air. */
+let jumpLatched = false;
+
 function act(a) {
   const r = R();
   if (!r) return;
+  // release the latch once we are grounded again
+  if (jumpLatched && r.tRex && !r.tRex.jumping) jumpLatched = false;
   const ev = (kc, t) => ({ keyCode: kc, type: t, preventDefault() {}, target: {} });
   if (a === "jump" || a === "jumpLow" || a === "jumpHigh") {
-    const wasJumping = !!(r.tRex && r.tRex.jumping);
+    // EDGE TRIGGER: one keydown per takeoff. Level-triggering re-launched
+    // the dino every frame the window stayed open.
+    if (jumpLatched || (r.tRex && r.tRex.jumping)) return;
+    jumpLatched = true;
+    const wasJumping = false;
     r.onKeyDown(ev(38, "keydown"));
     r.onKeyUp(ev(38, "keyup"));
     // Shape the arc AFTER startJump - setting jumpVelocity before it is
@@ -268,9 +277,14 @@ function restartEpisode() {
   if (!r) return;
   r.restart();
   for (let i = 0; i < 8; i++) CLOCK.step();
-  // a jump starts the game
+  // A jump starts the game, but the dino must be back on the ground before
+  // the episode begins - otherwise the edge-trigger latch blocks the first
+  // real decision and it never recovers.
   act("jump");
-  for (let i = 0; i < 6; i++) CLOCK.step();
+  jumpLatched = false;
+  for (let i = 0; i < 40 && r.tRex && r.tRex.jumping; i++) CLOCK.step();
+  for (let i = 0; i < 2; i++) CLOCK.step();
+  jumpLatched = false;
   const s = read();
   // DELTA baseline: restart() does not zero distanceRan in this build
   epStart = s ? s.distance : 0;
@@ -839,9 +853,12 @@ $("run").onclick = () => {
     // decisions dense (1 per frame) while giving full throughput. The
     // measured 3.5x loss came from stepping the clock 8x per DECISION, which
     // is a different thing entirely and cannot happen here.
+    // 600 frames is ~10 seconds of game time per batch: fast enough that a
+    // generation completes in seconds, small enough that the event loop gets
+    // control back between batches.
     const owed =
       rate === 0
-        ? 3000
+        ? 600
         : Math.min(240, Math.max(1, Math.round((elapsed / (1000 / 60)) * rate)));
     for (let i = 0; i < owed; i++) frame();
   };
@@ -872,7 +889,10 @@ $("run").onclick = () => {
   const fastTick = () => {
     if (!running) return;
     if (rateEl && Number(rateEl.value) === 0) {
-      for (let k = 0; k < 40; k++) pump();
+      // ONE bounded batch, then yield. 40 x 3000 = 120,000 frames in a single
+      // synchronous burst froze the page; the budget below keeps the thread
+      // responsive while still far outpacing real time.
+      pump();
     }
     setTimeout(fastTick, 0);
   };

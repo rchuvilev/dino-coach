@@ -25,6 +25,7 @@ const R = () => (window.Runner && window.Runner.instance_ ? window.Runner.instan
 let running = false;
 let loop = null;
 let rafId = null;
+let painter = null;
 let pop = [];
 let idx = 0;
 let epInCand = 0;
@@ -247,7 +248,7 @@ function frame() {
       recordEpisode(cand, dist, pop);
       epInCand++;
       log(`${candName(cand)} -> ${dist}`);
-      renderTable();
+      tableDirty = true;
 
       if (epInCand >= EPISODES_PER) {
         epInCand = 0;
@@ -281,6 +282,16 @@ function frame() {
   act(d.action);
   CLOCK.step();
 
+  // presentation is decoupled: stash the latest state, paint on a timer
+  latest = { s, d, cand };
+}
+
+/** Repaint from the most recent simulated frame. Called at ~20fps, not per frame. */
+let latest = null;
+let tableDirty = false;
+function paint() {
+  if (!latest) return;
+  const { s, d, cand } = latest;
   $("act").textContent = d.action;
   $("dist").textContent = Math.max(0, s.distance - epStart);
   $("v-gap").textContent = s.gap < 99999 ? Math.round(s.gap) : "—";
@@ -371,6 +382,14 @@ $("run").onclick = () => {
     if (!rateEl || Number(rateEl.value) > 2) pump();
     rafId = window.requestAnimationFrame(rafPump);
   };
+  painter = setInterval(() => {
+    paint();
+    if (tableDirty) {
+      tableDirty = false;
+      renderTable();
+      drawChart();
+    }
+  }, 50);
   loop = setInterval(() => {
     pump();
     // watchdog: if the odometer has not moved between ticks, the game lost
@@ -399,7 +418,10 @@ $("run").onclick = () => {
 $("stop").onclick = () => {
   running = false;
   clearInterval(loop);
+  clearInterval(painter);
   if (rafId) window.cancelAnimationFrame(rafId);
+  paint();
+  renderTable();
   $("run").disabled = false;
   $("stop").disabled = true;
   $("status").textContent = "stopped";

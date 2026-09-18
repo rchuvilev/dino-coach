@@ -87,13 +87,22 @@ function read() {
 }
 
 /** Act through the game's own key handlers, so input follows its real path. */
+/** Arc velocities for the current genome, set by decide(). */
+let lastArc = { low: 8, high: 12 };
+
 function act(a) {
   const r = R();
   if (!r) return;
   const ev = (kc, t) => ({ keyCode: kc, type: t, preventDefault() {}, target: {} });
-  if (a === "jump") {
+  if (a === "jump" || a === "jumpLow" || a === "jumpHigh") {
     r.onKeyDown(ev(38, "keydown"));
     r.onKeyUp(ev(38, "keyup"));
+    // Shape the arc AFTER startJump - setting jumpVelocity before it is
+    // overwritten by the game's own initialisation.
+    if (r.tRex && r.tRex.jumping) {
+      if (a === "jumpLow") r.tRex.jumpVelocity = -(lastArc.low);
+      else if (a === "jumpHigh") r.tRex.jumpVelocity = -(lastArc.high);
+    }
   } else if (a === "fastdrop") {
     // Abort the current jump via the game's own speed-drop (measured: cuts a
     // 30-frame arc to 13). setSpeedDrop leaves the dino DUCKING once it
@@ -147,7 +156,14 @@ function decide(s, g) {
     if (canDuck) return { action: "duck", rule: 1 };
     if (canJump) return { action: "jump", rule: 0 };
   } else {
-    if (canJump) return { action: "jump", rule: 0 };
+    if (canJump) {
+      // wide obstacle -> high arc to cover ground; narrow with another
+      // obstacle close behind -> low arc to land sooner and stay ready
+      const needHigh = s.wide;
+      const nextClose = s.gap2 < 99999 && s.gap2 - s.gap < (g.arcSwitch || 90);
+      const action = needHigh ? "jumpHigh" : nextClose ? "jumpLow" : "jump";
+      return { action, rule: 0 };
+    }
     if (canDuck) return { action: "duck", rule: 1 };
   }
   if (canPanic) return { action: "jump", rule: 0 };

@@ -39,6 +39,9 @@ function clampGenome(g) {
   g.late = Math.min(1, Math.max(0.15, g.late === undefined ? 1 : g.late));
   g.wideAdj = Math.min(35, Math.max(-35, g.wideAdj === undefined ? 0 : g.wideAdj));
   g.dropAt = Math.min(70, Math.max(0, g.dropAt === undefined ? 0 : g.dropAt));
+  g.arcLow = Math.min(11, Math.max(5, g.arcLow === undefined ? 8 : g.arcLow));
+  g.arcHigh = Math.min(17, Math.max(9, g.arcHigh === undefined ? 12 : g.arcHigh));
+  g.arcSwitch = Math.min(180, Math.max(30, g.arcSwitch === undefined ? 90 : g.arcSwitch));
   return g;
 }
 
@@ -71,6 +74,13 @@ function randomGenome(rnd) {
     // gap at which to ABORT a jump with fastdrop. 0 = never. The action
     // itself is an engine capability; this only says when to reach for it.
     dropAt: Math.round(rnd() * 60),
+    // JUMP ARC genes. Measured: velocity 8 gives a 57px/28-frame arc,
+    // velocity 12 gives 126px/42 frames. Low recovers sooner (fixes the
+    // "missed" class), high covers more ground (fixes "wide_early").
+    arcLow: +(6 + rnd() * 4).toFixed(1),
+    arcHigh: +(10 + rnd() * 6).toFixed(1),
+    // gap between consecutive obstacles below which the low arc is chosen
+    arcSwitch: Math.round(50 + rnd() * 90),
     // start at zero offsets: identical to option A until evolution finds a
     // reason to differentiate a band
     bands: BANDS.map(() => ({ lo: 0, w: 0 })),
@@ -125,7 +135,7 @@ function mutate(g, rnd) {
   const boost = (typeof S !== "undefined" && S && S.mutBoost) || 1;
   const heavy = rnd() < 0.15;
   const scale = (heavy ? 3.5 : 1) * boost;
-  const pick = Math.floor(rnd() * 10);
+  const pick = Math.floor(rnd() * 13);
   const nudge = () => Math.round((rnd() - 0.5) * 30 * scale);
   const slope = () => +((rnd() - 0.5) * 4 * scale).toFixed(2);
   if (pick === 0) n.loA = n.loA + nudge();
@@ -144,6 +154,12 @@ function mutate(g, rnd) {
     n.wideAdj = Math.max(-35, Math.min(35, (n.wideAdj || 0) + Math.round((rnd() - 0.5) * 20)));
   } else if (pick === 9) {
     n.dropAt = Math.max(0, Math.min(70, (n.dropAt || 0) + Math.round((rnd() - 0.5) * 30)));
+  } else if (pick === 10) {
+    n.arcLow = +Math.max(5, Math.min(11, (n.arcLow || 8) + (rnd() - 0.5) * 3 * scale)).toFixed(1);
+  } else if (pick === 11) {
+    n.arcHigh = +Math.max(9, Math.min(17, (n.arcHigh || 12) + (rnd() - 0.5) * 4 * scale)).toFixed(1);
+  } else if (pick === 12) {
+    n.arcSwitch = Math.max(30, Math.min(180, (n.arcSwitch || 90) + Math.round((rnd() - 0.5) * 50 * scale)));
   } else {
     // mutate ONE BAND's offset: the axis option B adds
     n.bands = (n.bands || BANDS.map(() => ({ lo: 0, w: 0 }))).map((b) => ({ ...b }));

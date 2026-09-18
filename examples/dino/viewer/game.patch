@@ -47,23 +47,49 @@
      }
  
      function GameOverPanel(canvas, textImgPos, restartImgPos, dimensions) {
-@@ -1481,6 +1497,15 @@
+@@ -1442,6 +1458,9 @@
+         update: function(deltaTime, distance) {
+             var paint = true;
+             var playSound = false;
++            // keep the unconverted argument: the conversion below is
++            // conditional, and the live-record patch needs points every frame
++            var rawDistance = distance;
+             if (!this.acheivement) {
+                 distance = this.getActualDistance(distance);
+                 if (distance > this.maxScore && this.maxScoreUnits == this.config.MAX_DISTANCE_UNITS) {
+@@ -1481,6 +1500,31 @@
                      this.draw(i, parseInt(this.digits[i]))
                  }
              }
 +            // HARNESS PATCH: promote the record as soon as the live score
-+            // exceeds it, rather than waiting for gameOver(). Without this X
-+            // sits frozen while Y runs past it for the whole episode.
++            // exceeds it, rather than waiting for gameOver().
++            //
++            // `distance` is derived from distanceRan, which this harness does
++            // NOT reset on restart, so it is CUMULATIVE across episodes.
++            // Comparing it directly promoted the running total: runs of 383,
++            // 1044, 350, 564, 434 points gave X = 21048. Compare the
++            // per-episode DELTA instead, re-baselining whenever the counter
++            // drops (a real restart) or has not been seeded yet.
++            // HARNESS PATCH: promote the record as soon as the live score
++            // exceeds it, instead of waiting for gameOver() - otherwise HI
++            // sits frozen while the live score runs past it all episode.
++            //
++            // `distance` is converted to points ONLY inside the
++            // !acheivement branch above, so during an achievement flash it is
++            // still RAW distanceRan (~40x larger). Promoting that inflated
++            // the record badly: a 200-point run set HI to 7993 and a
++            // 727-point run set it to 29096. Convert explicitly here.
++            var livePts = this.getActualDistance(Math.ceil(rawDistance));
 +            if (typeof this.liveHigh !== 'number') this.liveHigh = 0;
-+            if (distance > this.liveHigh) {
-+                this.liveHigh = distance;
-+                var liveStr = (this.defaultString + distance).substr(-this.maxScoreUnits);
++            if (livePts > this.liveHigh) {
++                this.liveHigh = livePts;
++                var liveStr = (this.defaultString + livePts).substr(-this.maxScoreUnits);
 +                this.highScore = ['10', '11', ''].concat(liveStr.split(''));
 +            }
              this.drawHighScore();
              return playSound
          },
-@@ -1494,8 +1519,20 @@
+@@ -1494,8 +1538,20 @@
          },
          setHighScore: function(distance) {
              distance = this.getActualDistance(distance);

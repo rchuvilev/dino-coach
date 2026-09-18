@@ -730,7 +730,12 @@ if (resetBtn) {
     const rr = R();
     if (rr) {
       rr.highestScore = 0;
-      if (rr.distanceMeter) rr.distanceMeter.setHighScore(0);
+      if (rr.distanceMeter) {
+        // clear the live-record cache as well: it is what the HUD renders,
+        // and a stale value survives setHighScore alone
+        rr.distanceMeter.liveHigh = 0;
+        rr.distanceMeter.setHighScore(0);
+      }
     }
     resetAll();
     pop = seedPopulation();

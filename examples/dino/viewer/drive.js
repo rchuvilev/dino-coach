@@ -30,6 +30,56 @@ import {
 } from "./evolve.js";
 
 const CLOCK = window.__CLOCK;
+/**
+ * Bucket a decision into a SITUATION class. Coarse on purpose: fine buckets
+ * split the data until every cell has one sample and the counts mean nothing.
+ * Three axes measured to matter: obstacle width, speed band, and whether a
+ * second obstacle is close behind.
+ */
+function ctxKey(d) {
+  const w = d.wide ? "wide" : "narrow";
+  const sp = d.speed < 8 ? "slow" : d.speed < 10.5 ? "mid" : "fast";
+  const n = d.next !== null && d.next < 90 ? "tight" : "open";
+  return `${w}/${sp}/${n}`;
+}
+
+/**
+ * The FULL situation at takeoff, as the user specified: speed, every obstacle
+ * currently on screen, and the jump's own properties. ctxKey() buckets this
+ * for counting; the raw record is what per-situation tuning reads, because a
+ * bucket cannot tell you the takeoff was 8px late.
+ */
+function captureSituation(s, action, g) {
+  const r = R();
+  const tx = r && r.tRex ? r.tRex.xPos + 44 : 0;
+  const onScreen = [];
+  for (const o of (r && r.horizon && r.horizon.obstacles) || []) {
+    onScreen.push({
+      d: Math.round(o.xPos - tx),
+      w: o.width || 0,
+      high: o.yPos < 75,
+      type: (o.typeConfig && o.typeConfig.type) || "",
+    });
+  }
+  onScreen.sort((a, b) => a.d - b.d);
+  return {
+    // world
+    speed: Math.round(s.speed * 100) / 100,
+    obstacles: onScreen.slice(0, 3),
+    // the jump itself
+    takeoffGap: Math.round(s.gap),
+    targetWidth: s.width,
+    wide: !!s.wide,
+    nextDelta: s.gap2 < 99999 ? Math.round(s.gap2 - s.gap) : null,
+    arc: action,
+    arcVel: action === "jumpLow" ? lastArc.low : action === "jumpHigh" ? lastArc.high : null,
+    // where the window sat when we chose - lets tuning say "8px too early"
+    windowLo: g.__wLo,
+    windowHi: g.__wHi,
+    frame: 0,
+  };
+}
+
 const $ = (id) => document.getElementById(id);
 const R = () => (window.Runner && window.Runner.instance_ ? window.Runner.instance_ : null);
 
@@ -131,6 +181,20 @@ function decide(s, g) {
   // OPTION A: the window is resolved from the CURRENT speed, so one genome
   // expresses a different takeoff distance early and late in the run.
   let w = windowAt(g, s.speed);
+  // stash for captureSituation: lets a failure be described as "took off 8px
+  // outside the window" rather than just "failed"
+  // apply what previous failures taught about THIS situation
+  if (g.ctxAdj) {
+    const probe = {
+      wide: !!s.wide,
+      speed: s.speed,
+      next: s.gap2 < 99999 ? s.gap2 - s.gap : null,
+    };
+    const adj = g.ctxAdj[ctxKey(probe)];
+    if (adj) w = { lo: Math.max(5, w.lo + adj), hi: Math.max(15, w.hi + adj) };
+  }
+  g.__wLo = Math.round(w.lo);
+  g.__wHi = Math.round(w.hi);
   // WIDTH-AWARE takeoff. Measured taxonomy over 20 deaths: 16 were "jumped
   // early, descended onto the obstacle", dominated by w>=70 cacti. The dino
   // clears 17 frames * speed px while high enough; a w75 needs 119px
@@ -329,6 +393,20 @@ function overlay(s, g) {
   // takeoff window of the ACTIVE genome
   if (g && !g.never && !g.always) {
     let w = windowAt(g, s.speed);
+  // stash for captureSituation: lets a failure be described as "took off 8px
+  // outside the window" rather than just "failed"
+  // apply what previous failures taught about THIS situation
+  if (g.ctxAdj) {
+    const probe = {
+      wide: !!s.wide,
+      speed: s.speed,
+      next: s.gap2 < 99999 ? s.gap2 - s.gap : null,
+    };
+    const adj = g.ctxAdj[ctxKey(probe)];
+    if (adj) w = { lo: Math.max(5, w.lo + adj), hi: Math.max(15, w.hi + adj) };
+  }
+  g.__wLo = Math.round(w.lo);
+  g.__wHi = Math.round(w.hi);
   // WIDTH-AWARE takeoff. Measured taxonomy over 20 deaths: 16 were "jumped
   // early, descended onto the obstacle", dominated by w>=70 cacti. The dino
   // clears 17 frames * speed px while high enough; a w75 needs 119px
@@ -357,8 +435,16 @@ function overlay(s, g) {
 let epFrames = 0;
 /** Telemetry accumulated within the current episode. */
 let tel = null;
+/** Context of the most recent takeoff, blamed if the episode ends badly. */
+function newDecision() {
+  return { gap: null, speed: null, width: null, wide: false, next: null, arc: null, frame: 0 };
+}
+
 function newTel() {
   return {
+    /** per-situation outcome counts: key -> {ok, fail} */
+    ctx: {},
+    lastDecision: null,
     jumps: 0, ducks: 0, panics: 0,
     framesAir: 0, frames: 0,
     wideSeen: 0, wideCleared: 0,
@@ -402,6 +488,15 @@ function frame() {
       // early (descending onto it), late (ascending into it), missed (never
       // jumped), bird, or wide-obstacle failure.
       const t = tel || newTel();
+      // BLAME: the takeoff that was still in flight when we died
+      if (t.lastDecision) {
+        const k = ctxKey(t.lastDecision);
+        const e = (t.ctx[k] = t.ctx[k] || { ok: 0, fail: 0, okGap: [], failGap: [] });
+        e.fail++;
+        if (e.failGap.length < 30) e.failGap.push(t.lastDecision.takeoffGap);
+        // keep the full situation of the most recent failure for inspection
+        t.lastFailure = t.lastDecision;
+      }
       let cause;
       if (t.lastHigh) cause = "bird";
       else if (!t.lastAir) cause = "missed";
@@ -481,6 +576,24 @@ function frame() {
     if (rr && rr.tRex && rr.tRex.ducking) {
       rr.onKeyUp({ keyCode: 40, type: "keyup", preventDefault() {}, target: {} });
     }
+  }
+  // record the takeoff context so a later crash can be attributed to it
+  if (d.action === "jump" || d.action === "jumpLow" || d.action === "jumpHigh") {
+    tel.lastDecision = captureSituation(s, d.action, cand.g);
+    tel.lastDecision.frame = tel.frames;
+    // keep the fields ctxKey needs
+    tel.lastDecision.gap = tel.lastDecision.takeoffGap;
+    tel.lastDecision.width = tel.lastDecision.targetWidth;
+    tel.lastDecision.next = tel.lastDecision.nextDelta;
+  }
+  // a jump is credited as SUCCESSFUL once its obstacle is behind us
+  if (tel.lastDecision && s.gap < -10 && tel.frames - tel.lastDecision.frame > 3) {
+    const k = ctxKey(tel.lastDecision);
+    const e = (tel.ctx[k] = tel.ctx[k] || { ok: 0, fail: 0, okGap: [], failGap: [] });
+    e.ok++;
+    // remember WHICH takeoff gap worked here - this is what tuning needs
+    if (e.okGap.length < 30) e.okGap.push(tel.lastDecision.takeoffGap);
+    tel.lastDecision = null;
   }
   if (d.action === "jump") tel.jumps++;
   else if (d.action === "duck") tel.ducks++;

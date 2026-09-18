@@ -438,7 +438,7 @@ export function recordEpisode(cand, dist, pop, bandDist, telemetry) {
   // than something a human sweeps by hand.
   if (telemetry) {
     const t = (cand.tel = cand.tel || {
-      causes: {}, jumps: 0, panics: 0, ducks: 0,
+      causes: {}, ctx: {}, jumps: 0, panics: 0, ducks: 0,
       framesAir: 0, frames: 0, missedWindow: 0,
       wideSeen: 0, wideCleared: 0, birdsSeen: 0, birdsCleared: 0,
     });
@@ -447,6 +447,20 @@ export function recordEpisode(cand, dist, pop, bandDist, telemetry) {
                      "wideSeen","wideCleared","birdsSeen","birdsCleared"]) {
       t[k] += telemetry[k] || 0;
     }
+    // MERGE the per-situation outcome map. It is a nested object, so the
+    // numeric loop above dropped it entirely - measured ctxPresent 0 on every
+    // candidate while hasTel was true, which made learnedOffsets a no-op.
+    if (telemetry.ctx) {
+      t.ctx = t.ctx || {};
+      for (const [k, e] of Object.entries(telemetry.ctx)) {
+        const dst = (t.ctx[k] = t.ctx[k] || { ok: 0, fail: 0, okGap: [], failGap: [] });
+        dst.ok += e.ok || 0;
+        dst.fail += e.fail || 0;
+        if (e.okGap) dst.okGap = dst.okGap.concat(e.okGap).slice(-30);
+        if (e.failGap) dst.failGap = dst.failGap.concat(e.failGap).slice(-30);
+      }
+    }
+    if (telemetry.lastFailure) t.lastFailure = telemetry.lastFailure;
     // derived rates - the numbers worth looking at
     t.pctAir = t.frames ? +(100 * t.framesAir / t.frames).toFixed(0) : 0;
     t.wideClearRate = t.wideSeen ? +(t.wideCleared / t.wideSeen).toFixed(2) : null;
@@ -533,6 +547,44 @@ export function generationComplete(pop) {
  * the class the agent has no answer to. `early` is penalised less because a
  * genome that at least attempts the jump is one mutation from correct timing.
  */
+/**
+ * Per-situation corrections learned from recorded outcomes.
+ *
+ * For each situation class we hold the takeoff gaps that worked and those
+ * that did not. If a class has enough of both, the gap between their medians
+ * is a DIRECTED correction for that class - the thing "38% missed" could
+ * never tell us. Requires MIN_SAMPLES on each side, because a single failure
+ * is noise at cv 0.50 and would otherwise swing the offset wildly.
+ */
+const MIN_SAMPLES = 4;
+
+export function learnedOffsets(tel) {
+  if (!tel || !tel.ctx) return {};
+  const med = (a) => {
+    if (!a || !a.length) return null;
+    const s2 = [...a].sort((x, y) => x - y);
+    return s2[Math.floor(s2.length / 2)];
+  };
+  const out = {};
+  for (const [k, e] of Object.entries(tel.ctx)) {
+    if (!e.okGap || !e.failGap) continue;
+    if (e.okGap.length < MIN_SAMPLES || e.failGap.length < MIN_SAMPLES) continue;
+    const mo = med(e.okGap);
+    const mf = med(e.failGap);
+    if (mo === null || mf === null) continue;
+    // positive = successful takeoffs happened at a LARGER gap (earlier)
+    const delta = mo - mf;
+    if (Math.abs(delta) < 3) continue;   // below measurement resolution
+    out[k] = {
+      delta: Math.max(-25, Math.min(25, Math.round(delta))),
+      okN: e.okGap.length,
+      failN: e.failGap.length,
+      rate: +(e.ok / (e.ok + e.fail)).toFixed(2),
+    };
+  }
+  return out;
+}
+
 export function fitnessOf(c) {
   const base = c.median || 0;
   const t = c.tel;
@@ -569,6 +621,21 @@ export function closeGeneration(pop) {
   // episodes and must never be carried into the next - doing so froze the
   // reported best at 33055 for 31 consecutive generations while real
   // candidates were scoring 10012..22436.
+  // Bake each elite's learned per-situation corrections into its genome, so
+  // the next generation INHERITS what the failures taught rather than
+  // rediscovering it. This is the step that makes failure analysis change
+  // behaviour instead of only changing a score.
+  for (const c of evolved.slice(0, ELITE)) {
+    const off = learnedOffsets(c.tel);
+    if (Object.keys(off).length) {
+      c.g = { ...c.g, ctxAdj: { ...(c.g.ctxAdj || {}) } };
+      for (const [k, v] of Object.entries(off)) {
+        const prev = c.g.ctxAdj[k] || 0;
+        // move a fraction of the way, so one generation cannot overcorrect
+        c.g.ctxAdj[k] = Math.max(-30, Math.min(30, Math.round(prev + v.delta * 0.4)));
+      }
+    }
+  }
   S.population = evolved.slice(0, ELITE).map((c) => ({
     g: c.g,
     lastMedian: c.median,   // provenance only, never used for ranking

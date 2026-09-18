@@ -3,3 +3,4 @@ node_modules/
 *.log
 examples/dino/viewer/game.js
 examples/dino/viewer/game.orig.js
+examples/dino/viewer/dino-standalone.html

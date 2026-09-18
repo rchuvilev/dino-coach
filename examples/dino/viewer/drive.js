@@ -14,8 +14,13 @@ import {
   label,
   recordEpisode,
   resetAll,
+  exportState,
   generationComplete,
+  importState,
+  loadSlot,
+  saveSlot,
   seedPopulation,
+  slotInfo,
   windowAt,
 } from "./evolve.js";
 
@@ -450,6 +455,75 @@ $("stop").onclick = () => {
   $("status").textContent = "stopped";
   $("status").className = "tag";
 };
+
+function refreshAll() {
+  pop = seedPopulation();
+  idx = 0;
+  epInCand = 0;
+  renderTable();
+  drawChart();
+}
+
+const saveBtn = $("save");
+if (saveBtn) {
+  saveBtn.onclick = () => {
+    const S = currentState();
+    log(saveSlot() ? `saved: gen ${S.generation}, ep ${S.episodes}` : "save FAILED (storage unavailable)");
+  };
+}
+
+const loadBtn = $("load");
+if (loadBtn) {
+  loadBtn.onclick = () => {
+    const info = slotInfo();
+    if (!info) {
+      log("no saved slot to load");
+      return;
+    }
+    if (!loadSlot()) {
+      log("load FAILED");
+      return;
+    }
+    refreshAll();
+    log(`loaded: gen ${info.gen}, ep ${info.ep}, typical ${info.typical || 0}`);
+  };
+}
+
+const exportBtn = $("export");
+if (exportBtn) {
+  exportBtn.onclick = () => {
+    const S = currentState();
+    const blob = new Blob([exportState()], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `dino-evolve-gen${S.generation}-ep${S.episodes}.json`;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      URL.revokeObjectURL(a.href);
+      a.remove();
+    }, 1000);
+    log(`exported gen ${S.generation}, ep ${S.episodes}`);
+  };
+}
+
+const importBtn = $("import");
+const fileEl = $("file");
+if (importBtn && fileEl) {
+  importBtn.onclick = () => fileEl.click();
+  fileEl.onchange = async () => {
+    const f = fileEl.files && fileEl.files[0];
+    if (!f) return;
+    try {
+      const S2 = importState(await f.text());
+      refreshAll();
+      log(`imported: gen ${S2.generation}, ep ${S2.episodes}`);
+    } catch (e) {
+      log(`import FAILED: ${String(e.message || e).slice(0, 60)}`);
+    }
+    fileEl.value = "";
+  };
+}
 
 const resetBtn = $("reset");
 if (resetBtn) {

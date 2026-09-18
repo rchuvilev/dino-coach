@@ -227,6 +227,56 @@ export function currentState() {
   return S;
 }
 
+const SLOT_KEY = STORE_KEY + "-slot";
+
+/** Explicit save: a named snapshot the rolling autosave cannot overwrite. */
+export function saveSlot() {
+  try {
+    localStorage.setItem(SLOT_KEY, JSON.stringify({ ...S, savedAt: Date.now() }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Restore the explicit snapshot. Returns false when there is none. */
+export function loadSlot() {
+  try {
+    const raw = localStorage.getItem(SLOT_KEY);
+    if (!raw) return false;
+    S = migrate(JSON.parse(raw));
+    save(S);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function slotInfo() {
+  try {
+    const raw = localStorage.getItem(SLOT_KEY);
+    if (!raw) return null;
+    const d = JSON.parse(raw);
+    return { gen: d.generation, ep: d.episodes, typical: d.bestMedian, savedAt: d.savedAt };
+  } catch {
+    return null;
+  }
+}
+
+/** Serialise for download. */
+export function exportState() {
+  return JSON.stringify({ ...S, exportedAt: Date.now() }, null, 2);
+}
+
+/** Load from an imported file. Migrated, so old exports still work. */
+export function importState(text) {
+  const parsed = JSON.parse(text);
+  if (!parsed || typeof parsed !== "object") throw new Error("not a state object");
+  S = migrate(parsed);
+  save(S);
+  return S;
+}
+
 export function resetAll() {
   S = blank();
   save(S);

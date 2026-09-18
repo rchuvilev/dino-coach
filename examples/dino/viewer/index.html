@@ -71,12 +71,17 @@ tr.ctrl td{color:var(--warn)}
     <button id="run" class="primary">Run</button>
     <button id="stop" disabled>Stop</button>
     <button id="reset">Reset</button>
+    <button id="save" title="write current state to localStorage">Save</button>
+    <button id="load" title="restore last saved state">Load</button>
+    <button id="export" title="download state as a .json file">Export</button>
+    <button id="import" title="load state from a .json file">Import</button>
+    <input id="file" type="file" accept="application/json" style="display:none">
     <label style="color:var(--dim);font-size:10px;display:flex;gap:4px;align-items:center">
       speed <select id="rate">
-        <option value="1">1x real</option>
+        <option value="1" selected>1x real</option>
         <option value="2">2x</option>
         <option value="4">4x</option>
-        <option value="12" selected>12x</option>
+        <option value="12">12x</option>
         <option value="24">24x turbo</option>
       </select>
     </label>
@@ -141,6 +146,6 @@ tr.ctrl td{color:var(--warn)}
      stepping advances nothing). -->
 <script src="clock.js?p=6"></script>
 <script src="game.js?p=6"></script>
-<script type="module" src="drive.js?p=19"></script>
+<script type="module" src="drive.js?p=20"></script>
 </body>
 </html>

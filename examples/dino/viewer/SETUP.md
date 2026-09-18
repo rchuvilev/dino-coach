@@ -25,3 +25,25 @@ patch game.js < game.patch
 during boot, and a callback registered against the real rAF is invisible to
 our queue — symptom: `raqId=1` while `CLOCK.cbs` is empty, so stepping
 advances nothing and every policy scores 0.
+
+## Standalone build
+
+```sh
+sh build.sh      # -> dino-standalone.html (~108 KB)
+```
+
+One self-contained file: the patched game, the clock, the bundled evolution
+code, and both sprites as data URIs. Runs from `file://` in any browser with
+no server and no network.
+
+Inlining is not cosmetic. ES modules and `<img src>` are blocked by the
+`file://` origin in several browsers, and `fetch()` is blocked on the
+`minis://` scheme (measured) — a single file with data URIs sidesteps all of
+it. Script order is preserved: clock before game, bundle last.
+
+## State
+
+- **Save / Load** — an explicit localStorage slot, separate from the rolling
+  autosave, so an experiment cannot overwrite a checkpoint.
+- **Export / Import** — the same state as a `.json` file. Imports run through
+  the same migration as stored state, so older exports still load.

@@ -118,8 +118,13 @@ function mutate(g, rnd) {
   // 15% of mutations are LARGE. With only small nudges the population never
   // escaped the genome found in generation 1 - measured flat for 27
   // generations. A heavy tail in the step size is the standard fix.
+  // Stagnation-scaled step size: 1x while improving, up to 6x after a long
+  // plateau. A fixed step size cannot both refine a good genome and escape a
+  // local optimum - measured, small steps alone froze the score for 10+
+  // generations with a fully diverse population.
+  const boost = (typeof S !== "undefined" && S && S.mutBoost) || 1;
   const heavy = rnd() < 0.15;
-  const scale = heavy ? 3.5 : 1;
+  const scale = (heavy ? 3.5 : 1) * boost;
   const pick = Math.floor(rnd() * 10);
   const nudge = () => Math.round((rnd() - 0.5) * 30 * scale);
   const slope = () => +((rnd() - 0.5) * 4 * scale).toFixed(2);
@@ -300,7 +305,14 @@ function seedPopulation() {
     return out;
   }
   // carry elites forward - this is the persistence that makes it cumulative
-  for (const e of (S.population || []).slice(0, ELITE)) {
+  let elites = S.population || [];
+  if (S.forceCull && elites.length > 1) {
+    // remove the longest-serving elite: it is the anchor holding the
+    // population at a local optimum
+    elites = elites.slice(0, -1);
+    S.forceCull = false;
+  }
+  for (const e of elites.slice(0, ELITE)) {
     // genome carries forward, MEASUREMENTS DO NOT. Keeping runs/samples made
     // an elite's stale median win every generation without being re-tested -
     // 27 generations reported the identical best of 18255.
@@ -522,6 +534,11 @@ export function fitnessOf(c) {
   return Math.round(base * Math.max(0.5, Math.min(1.25, factor)));
 }
 
+/** Generations since the record last moved. Drives the escape mechanisms. */
+function stagnation(S2) {
+  return (S2.generation || 0) - (S2.lastImproveGen || 0);
+}
+
 export function closeGeneration(pop) {
   // MEDIAN, not mean: the score distribution has a long upper tail (12 runs
   // of one genome: 6340..18777), so a mean rewards luck. The median moves
@@ -541,6 +558,26 @@ export function closeGeneration(pop) {
     lastMedian: c.median,   // provenance only, never used for ranking
     fromGen: S.generation,
   }));
+  // --- ADAPTIVE ESCAPE ---------------------------------------------------
+  // Track whether this generation actually beat the running best. Measured
+  // stagnation was 10+ generations at an identical score with a diverse
+  // population, which means selection pressure - not exploration - is stuck.
+  const topFit = evolved.length ? fitnessOf(evolved[0]) : 0;
+  if (topFit > (S.bestFitEver || 0) * 1.02) {
+    S.bestFitEver = topFit;
+    S.lastImproveGen = S.generation;
+  }
+  const stale = stagnation(S);
+  // Mutation strength rises with stagnation and resets on improvement, so
+  // the search widens only when it has evidence it is stuck.
+  S.mutBoost = stale >= 5 ? Math.min(6, 1 + (stale - 4) * 0.5) : 1;
+  // After a long plateau, cull the oldest elite outright. Keeping every
+  // elite forever is what pins the population to one point.
+  if (stale >= 12 && evolved.length > 1) {
+    S.forceCull = true;
+    S.lastImproveGen = S.generation;  // give the new shape time to prove out
+  }
+
   S.history.push({
     gen: S.generation,
     // only count candidates with real episodes this generation
@@ -556,6 +593,7 @@ export function closeGeneration(pop) {
     })(),
     control: bestCtrl,
     episodes: S.episodes,
+    stale,
   });
   if (S.history.length > 200) S.history = S.history.slice(-200);
   save(S);

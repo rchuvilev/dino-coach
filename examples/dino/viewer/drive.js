@@ -230,9 +230,14 @@ function renderTable() {
   // distance here while the canvas showed points made a 361-point confirmed
   // median look like a ceiling against a 1191-point game record.
   const pts = (d) => Math.round((d || 0) * 0.025);
+  // surface the escape state: a flat curve is only worrying if the search
+  // is NOT already widening in response to it
+  const stale = (S.generation || 0) - (S.lastImproveGen || 0);
+  const boost = S.mutBoost && S.mutBoost > 1 ? ` · explore x${S.mutBoost.toFixed(1)}` : "";
   $("evoinfo").textContent =
     `s${S.sessions} · gen ${S.generation} · ep ${S.episodes} · ` +
-    `typical ${pts(S.bestMedian)}pts · best ${pts(S.bestEver)}pts`;
+    `typical ${pts(S.bestMedian)}pts · best ${pts(S.bestEver)}pts` +
+    (stale > 0 ? ` · stale ${stale}` : "") + boost;
 }
 
 function drawChart() {

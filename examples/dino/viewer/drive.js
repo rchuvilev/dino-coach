@@ -148,6 +148,71 @@ function read() {
 /** Arc velocities for the current genome, set by decide(). */
 let lastArc = { low: 8, high: 12 };
 
+// ---- keep-awake ---------------------------------------------------------
+let wakeLock = null;
+let keepAliveVideo = null;
+
+/** Hold the screen on for the duration of a run. */
+async function acquireWakeLock() {
+  // preferred: the real API, Chrome on a secure origin
+  try {
+    if (navigator.wakeLock && !wakeLock) {
+      wakeLock = await navigator.wakeLock.request("screen");
+      // the OS can revoke it (tab hidden, battery saver) - re-acquire when
+      // we become visible again rather than silently losing it
+      wakeLock.addEventListener("release", () => {
+        wakeLock = null;
+      });
+      return "api";
+    }
+  } catch {
+    wakeLock = null;
+  }
+  // fallback: a muted looping video counts as playback and holds the screen
+  try {
+    if (!keepAliveVideo) {
+      const v = document.createElement("video");
+      v.setAttribute("playsinline", "");
+      v.muted = true;
+      v.loop = true;
+      v.style.cssText = "position:fixed;width:1px;height:1px;opacity:0.01;pointer-events:none;left:0;bottom:0";
+      // Generate the stream instead of embedding a blob: a hand-written
+      // base64 webm failed with NotSupportedError, and captureStream() can
+      // never have an invalid payload.
+      const c = document.createElement("canvas");
+      c.width = 2;
+      c.height = 2;
+      const cx = c.getContext("2d");
+      cx.fillStyle = "#000";
+      cx.fillRect(0, 0, 2, 2);
+      if (c.captureStream) v.srcObject = c.captureStream(1);
+      document.body.appendChild(v);
+      keepAliveVideo = v;
+    }
+    await keepAliveVideo.play();
+    return "video";
+  } catch {
+    return "none";
+  }
+}
+
+function releaseWakeLock() {
+  try {
+    if (wakeLock) {
+      wakeLock.release();
+      wakeLock = null;
+    }
+  } catch { /* already gone */ }
+  try {
+    if (keepAliveVideo) keepAliveVideo.pause();
+  } catch { /* ignore */ }
+}
+
+// Re-acquire after the OS revokes it (tab hidden, then visible again).
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && running) acquireWakeLock();
+});
+
 /** True while a jump we issued is still in the air. */
 let jumpLatched = false;
 
@@ -823,6 +888,13 @@ $("run").onclick = () => {
     return;
   }
   running = true;
+  // hold the screen on for the duration of the run
+  acquireWakeLock().then((mode) => {
+    if (mode !== "none") log(`screen kept awake (${mode})`);
+  });
+  jumpLatched = false;
+  sawCrash = false;
+  epFrames = 0;
   $("run").disabled = true;
   $("stop").disabled = false;
   $("status").textContent = "evolving";
@@ -873,6 +945,7 @@ $("run").onclick = () => {
       // timer kept firing, pump() kept throwing, and the UI still read
       // "evolving". Surface it and stop cleanly instead.
       running = false;
+      releaseWakeLock();
       $("status").textContent = "error";
       $("status").className = "tag dead";
       log(`ERROR: ${String((e && e.message) || e).slice(0, 80)}`);
@@ -967,6 +1040,7 @@ $("run").onclick = () => {
 
 $("stop").onclick = () => {
   running = false;
+  releaseWakeLock();
   clearInterval(loop);
   clearInterval(painter);
   if (rafId) window.cancelAnimationFrame(rafId);
@@ -1097,6 +1171,7 @@ if (resetBtn) {
     // stop first: a running loop re-saves its in-memory state over the wipe
     if (running) {
       running = false;
+      releaseWakeLock();
       clearInterval(loop);
       clearInterval(painter);
       if (rafId) window.cancelAnimationFrame(rafId);

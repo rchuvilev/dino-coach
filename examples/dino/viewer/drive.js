@@ -17,7 +17,10 @@ import {
   bandOf,
   BANDS,
   exportState,
+  EPISODES_PER as EP_PER,
+  episodesFor,
   generationComplete,
+  POP as POP_SIZE,
   importState,
   loadSlot,
   saveSlot,
@@ -180,9 +183,25 @@ function drawChart() {
   ctx.clearRect(0, 0, c.width, c.height);
   const h = S.history;
   if (!h.length) {
+    const S2 = currentState();
+    const done = S2.episodes || 0;
+    const need = POP_SIZE * episodesFor(S2.generation);
+    const frac = Math.min(1, done / need);
     ctx.fillStyle = "#7c8a9a";
     ctx.font = "10px monospace";
-    ctx.fillText("no generations yet", 8, 16);
+    ctx.fillText(`generation 1: ${done}/${need} episodes`, 8, 14);
+    // progress bar, so "nothing yet" is visibly DIFFERENT from "stuck"
+    const w = c.width - 16;
+    ctx.strokeStyle = "#232b35";
+    ctx.strokeRect(8.5, 24.5, w, 8);
+    ctx.fillStyle = "#3ddc84";
+    ctx.fillRect(9, 25, Math.max(0, w * frac - 1), 7);
+    ctx.fillStyle = "#7c8a9a";
+    ctx.fillText(
+      frac < 1 ? "use rate 'max (evolve)' to get here in seconds" : "closing...",
+      8,
+      48,
+    );
     return;
   }
   const max = Math.max(...h.map((x) => Math.max(x.best, x.control)), 1);
@@ -286,11 +305,12 @@ function frame() {
       // Drive on cand.runs, which PERSISTS, not on epInCand which resets on
       // reload - that mismatch let candidates reach 28 runs against a budget
       // of 9 while the generation never closed (gen 0 after 63 episodes).
-      if ((cand.runs || 0) >= EPISODES_PER) {
+      const budget = episodesFor(currentState().generation);
+      if ((cand.runs || 0) >= budget) {
         epInCand = 0;
         // advance to the next candidate that still owes episodes, INCLUDING
         // controls - they are the baseline that makes a score meaningful.
-        do { idx++; } while (idx < pop.length && (pop[idx].runs || 0) >= EPISODES_PER);
+        do { idx++; } while (idx < pop.length && (pop[idx].runs || 0) >= budget);
         if (idx >= pop.length) {
           // generation complete: rank, keep elites, breed the next
           const { best, bestCtrl } = closeGeneration(pop);

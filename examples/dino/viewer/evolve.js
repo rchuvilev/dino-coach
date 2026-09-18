@@ -220,7 +220,14 @@ const POP = 24;
 // standard error too large to select on. 5 gives a usable median while
 // keeping a generation (5 x 6 = 30 episodes) observable: at 9 episodes per
 // candidate a generation took many minutes and gen stayed 0.
-const EPISODES_PER = 4;
+const EPISODES_PER_FULL = 4;
+/** Episodes for a given generation. Generation 1 is short so the chart shows
+ *  a datapoint in reasonable time at the default 1x rate; later generations
+ *  use the full budget for a trustworthy median. */
+export function episodesFor(gen) {
+  return gen === 0 ? 2 : EPISODES_PER_FULL;
+}
+const EPISODES_PER = EPISODES_PER_FULL;
 const ELITE = 5;
 
 function seedPopulation() {
@@ -341,7 +348,7 @@ export function resetAll() {
   save(S);
 }
 
-export { seedPopulation, mutate, randomGenome, key, label, ELITE, EPISODES_PER, rnd, clampGenome, save };
+export { seedPopulation, mutate, randomGenome, key, label, ELITE, EPISODES_PER, POP, rnd, clampGenome, save };
 
 export function recordEpisode(cand, dist, pop, bandDist) {
   cand.runs++;

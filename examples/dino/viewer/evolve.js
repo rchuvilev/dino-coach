@@ -38,6 +38,7 @@ function clampGenome(g) {
   g.panic = Math.min(34, Math.max(0, g.panic === undefined ? 0 : g.panic));
   g.late = Math.min(1, Math.max(0.15, g.late === undefined ? 1 : g.late));
   g.wideAdj = Math.min(35, Math.max(-35, g.wideAdj === undefined ? 0 : g.wideAdj));
+  g.dropAt = Math.min(70, Math.max(0, g.dropAt === undefined ? 0 : g.dropAt));
   return g;
 }
 
@@ -67,6 +68,9 @@ function randomGenome(rnd) {
     // clearable at all (102px of clearance travel against 119px needed), so
     // the correct response differs from a narrow cactus.
     wideAdj: Math.round((rnd() - 0.5) * 70),   // wide range, GA decides
+    // gap at which to ABORT a jump with fastdrop. 0 = never. The action
+    // itself is an engine capability; this only says when to reach for it.
+    dropAt: Math.round(rnd() * 60),
     // start at zero offsets: identical to option A until evolution finds a
     // reason to differentiate a band
     bands: BANDS.map(() => ({ lo: 0, w: 0 })),
@@ -111,7 +115,7 @@ export function windowAt(g, speed) {
 
 function mutate(g, rnd) {
   const n = { ...g };
-  const pick = Math.floor(rnd() * 9);
+  const pick = Math.floor(rnd() * 10);
   const nudge = () => Math.round((rnd() - 0.5) * 30);
   const slope = () => +((rnd() - 0.5) * 4).toFixed(2);
   if (pick === 0) n.loA = n.loA + nudge();
@@ -128,6 +132,8 @@ function mutate(g, rnd) {
     n.late = +Math.max(0.15, Math.min(1, (n.late === undefined ? 1 : n.late) + (rnd() - 0.5) * 0.4)).toFixed(2);
   } else if (pick === 8) {
     n.wideAdj = Math.max(-35, Math.min(35, (n.wideAdj || 0) + Math.round((rnd() - 0.5) * 20)));
+  } else if (pick === 9) {
+    n.dropAt = Math.max(0, Math.min(70, (n.dropAt || 0) + Math.round((rnd() - 0.5) * 30)));
   } else {
     // mutate ONE BAND's offset: the axis option B adds
     n.bands = (n.bands || BANDS.map(() => ({ lo: 0, w: 0 }))).map((b) => ({ ...b }));

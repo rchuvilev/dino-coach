@@ -57,15 +57,21 @@ function read() {
   let gap = 99999;
   let high = false;
   let width = 0;
+  // gap2: the obstacle AFTER the nearest one. Required by fastdrop, which
+  // must not abort the jump that is currently clearing an obstacle.
+  let gap2 = 99999;
+  const ahead = [];
   for (const o of (r.horizon && r.horizon.obstacles) || []) {
     const d = o.xPos - tx;
-    if (d > -30 && d < gap) {
-      gap = d;
-      // birds sit at yPos < 75 in this build; 60 missed the low-flying ones
-      high = o.yPos < 75;
-      width = o.width || 0;
-    }
+    if (d > -30) ahead.push({ d, high: o.yPos < 75, w: o.width || 0 });
   }
+  ahead.sort((a, b) => a.d - b.d);
+  if (ahead[0]) {
+    gap = ahead[0].d;
+    high = ahead[0].high;
+    width = ahead[0].w;
+  }
+  if (ahead[1]) gap2 = ahead[1].d;
   return {
     crashed: !!r.crashed,
     started: !!r.started,
@@ -73,6 +79,7 @@ function read() {
     speed: r.currentSpeed || 0,
     airborne: r.tRex.yPos < (r.tRex.groundYPos || 93) - 4,
     gap,
+    gap2,
     high,
     width,
     wide: width >= 50,
@@ -87,6 +94,17 @@ function act(a) {
   if (a === "jump") {
     r.onKeyDown(ev(38, "keydown"));
     r.onKeyUp(ev(38, "keyup"));
+  } else if (a === "fastdrop") {
+    // Abort the current jump via the game's own speed-drop (measured: cuts a
+    // 30-frame arc to 13). setSpeedDrop leaves the dino DUCKING once it
+    // lands, and a ducking dino cannot jump - that turned the first fastdrop
+    // into the last jump of the episode and collapsed scores 1263 -> 34.
+    // Releasing ArrowDown clears it through the game's own handler.
+    if (r.tRex && r.tRex.jumping) {
+      r.tRex.setSpeedDrop();
+    } else {
+      r.onKeyUp(ev(40, "keyup"));
+    }
   } else if (a === "duck") {
     r.onKeyDown(ev(40, "keydown"));
   } else {
@@ -163,11 +181,13 @@ function renderRules(fired, s, g) {
   const rows = [
     { when: `gap ${Math.round(w.lo)}..${Math.round(w.hi)} @spd${s ? s.speed.toFixed(1) : "?"}`, then: "jump" },
     { when: `high & gap<=${g.duck}`, then: "duck" },
+    { when: `airborne & passed & next<=${g.dropAt || 0}`, then: "fastdrop" },
     { when: "always", then: "run" },
   ];
   const matched = [
     has && !s.high && s.gap >= w.lo && s.gap <= w.hi && !s.airborne,
     has && s.high && g.duck > 0 && s.gap <= g.duck,
+    (g.dropAt || 0) > 0 && s.airborne && s.gap <= 0 && s.gap2 < 99999 && s.gap2 <= g.dropAt,
     true,
   ];
   const ul = $("rules");
@@ -433,6 +453,14 @@ function frame() {
   lastDist = here;
 
   const d = decide(s, cand.g);
+  // safety: never leave the dino stuck ducking on the ground, which silently
+  // disables jumping for the rest of the episode
+  if (!s.airborne && d.action !== "duck") {
+    const rr = R();
+    if (rr && rr.tRex && rr.tRex.ducking) {
+      rr.onKeyUp({ keyCode: 40, type: "keyup", preventDefault() {}, target: {} });
+    }
+  }
   if (d.action === "jump") tel.jumps++;
   else if (d.action === "duck") tel.ducks++;
   if (d.panic) tel.panics++;

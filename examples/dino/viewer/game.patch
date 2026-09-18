@@ -47,16 +47,21 @@
      }
  
      function GameOverPanel(canvas, textImgPos, restartImgPos, dimensions) {
-@@ -1389,7 +1405,11 @@
-     };
-     DistanceMeter.yPos = [0, 13, 27, 40, 53, 67, 80, 93, 107, 120];
-     DistanceMeter.config = {
--        MAX_DISTANCE_UNITS: 5,
-+        // HARNESS PATCH: 5 -> 6. Evolved policies exceed 99999 distance
-+        // units, and setHighScore truncates with .substr(-maxScoreUnits),
-+        // so the HI readout showed garbage while the stored highestScore
-+        // was correct.
-+        MAX_DISTANCE_UNITS: 6,
-         ACHIEVEMENT_DISTANCE: 100,
-         COEFFICIENT: 0.025,
-         FLASH_DURATION: 1000 / 4,
+@@ -1494,6 +1510,17 @@
+         },
+         setHighScore: function(distance) {
+             distance = this.getActualDistance(distance);
++            // HARNESS PATCH: grow the meter to fit instead of truncating.
++            // Evolved policies exceed the 5-digit default, and the original
++            // .substr(-maxScoreUnits) silently rendered the WRONG number
++            // (measured: stored highestScore 59145 displayed as garbage).
++            // defaultString is grown in step so update()'s digit arrays stay
++            // the same length - desyncing them stops the meter repainting.
++            var needed = String(distance).length;
++            while (this.maxScoreUnits < needed) {
++                this.maxScoreUnits++;
++                this.defaultString += '0';
++            }
+             var highScoreStr = (this.defaultString + distance).substr(-this.maxScoreUnits);
+             this.highScore = ['10', '11', ''].concat(highScoreStr.split(''))
+         },

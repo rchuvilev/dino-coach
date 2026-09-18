@@ -1,57 +1,34 @@
 /**
- * Drives the REAL Chrome Dino game, hosted locally with a manual clock.
+ * Unbounded evolving run on the REAL dino game.
  *
- * Why this is the right approach, after three failed ones:
- *  - iframe: cross-origin. The page renders but Runner.instance_ is
- *    unreachable ("Blocked a frame with origin minis:// ..."). Verified.
- *  - driving chromedino.com from outside: works, but each execute_js call is
- *    capped at 30s, which is far too little for many episodes.
- *  - overwriting Runner.time from outside: CORRUPTED the sim - obstacles
- *    drifted AWAY from the player, distanceRan read 650845248688.
- *
- * Here we serve the game's OWN game.js (73KB, defining Runner) and its own
- * sprites, with two surgical patches: getTimeStamp() and the single
- * requestAnimationFrame call both consult window.__CLOCK. Everything the
- * game computes - deltaTime, distanceRan, obstacle x, the jump arc - flows
- * from getTimeStamp(), so owning it makes the real game deterministic and
- * steppable WITHOUT touching game logic.
+ * Loop: evaluate every candidate in the generation over EPISODES_PER
+ * episodes, rank by live mean, keep elites, breed, repeat — forever, until
+ * stopped. Population persists to localStorage, so a reload continues.
  */
+import {
+  closeGeneration,
+  currentState,
+  ELITE,
+  EPISODES_PER,
+  key,
+  label,
+  recordEpisode,
+  resetAll,
+  seedPopulation,
+} from "./evolve.js";
 
-// clock lives in clock.js, loaded BEFORE game.js (see index.html)
 const CLOCK = window.__CLOCK;
-
-const RULES = [
-  { when: "obstacle_imminent", then: "jump" },
-  { when: "high_obstacle", then: "duck" },
-  { when: "obstacle_near", then: "jump" },
-  { when: "always", then: "run" },
-];
-
-// WINDOWS, not ceilings. A `gap <= N` ceiling fires continuously from N down
-// to 0 and takes off far too early; on the synthetic target that single
-// mistake made a ground-truth ORACLE score BELOW the do-nothing control.
-// Windows sized from MEASURED geometry: obstacles close at ~6px per frame
-// (366 distance per 60 frames at speed 6.14, ratio 0.99 vs expected), and the
-// jump rise takes ~10 frames, so takeoff must happen ~60-100px out. A window
-// of 35px only gives ~6 usable frames and is easily missed.
-const POLICIES = [
-  { label: "window 40..100", lo: 40, hi: 100, duck: 40 },
-  { label: "window 60..130", lo: 60, hi: 130, duck: 40 },
-  { label: "window 80..160", lo: 80, hi: 160, duck: 40 },
-  { label: "human ceiling <=60", lo: 0, hi: 60, duck: 40 },
-  { label: "control: do-nothing", lo: -1, hi: -1, duck: -1, ctrl: true },
-  { label: "control: always-jump", lo: 0, hi: 99998, duck: -1, ctrl: true },
-];
-
 const $ = (id) => document.getElementById(id);
+const R = () => (window.Runner && window.Runner.instance_ ? window.Runner.instance_ : null);
+
 let running = false;
-let policyIdx = 0;
-let episode = 0;
-let best = 0;
-let frames = 0;
+let loop = null;
+let rafId = null;
+let pop = [];
+let idx = 0;
+let epInCand = 0;
+let epStart = 0;
 let sawCrash = false;
-let epStart = 0;   // distanceRan at the start of the current episode
-const results = POLICIES.map(() => ({ runs: 0, total: 0, best: 0 }));
 let logLines = [];
 
 const log = (s) => {
@@ -59,8 +36,6 @@ const log = (s) => {
   logLines = logLines.slice(0, 5);
   $("log").textContent = logLines.join("\n");
 };
-
-const R = () => (window.Runner && window.Runner.instance_ ? window.Runner.instance_ : null);
 
 function read() {
   const r = R();
@@ -86,222 +61,265 @@ function read() {
   };
 }
 
-/** Act through the game's OWN key handlers, so input follows its real path. */
+/** Act through the game's own key handlers, so input follows its real path. */
 function act(a) {
   const r = R();
   if (!r) return;
+  const ev = (kc, t) => ({ keyCode: kc, type: t, preventDefault() {}, target: {} });
   if (a === "jump") {
-    r.onKeyDown({ keyCode: 38, type: "keydown", preventDefault() {}, target: {} });
-    r.onKeyUp({ keyCode: 38, type: "keyup", preventDefault() {}, target: {} });
+    r.onKeyDown(ev(38, "keydown"));
+    r.onKeyUp(ev(38, "keyup"));
   } else if (a === "duck") {
-    r.onKeyDown({ keyCode: 40, type: "keydown", preventDefault() {}, target: {} });
+    r.onKeyDown(ev(40, "keydown"));
   } else {
-    r.onKeyUp({ keyCode: 40, type: "keyup", preventDefault() {}, target: {} });
+    r.onKeyUp(ev(40, "keyup"));
   }
 }
 
-const condsOf = (s, p) => {
+/** Decide from the genome. Returns {action, rule}. */
+function decide(s, g) {
   const has = s.gap < 99999;
-  return {
-    obstacle_imminent: has && !s.high && s.gap >= p.lo && s.gap <= p.hi && !s.airborne,
-    high_obstacle: has && s.high && p.duck > 0 && s.gap <= p.duck,
-    obstacle_near: has && s.gap <= p.hi + 20,
-    always: true,
-  };
-};
+  const canDuck = g.duck > 0 && has && s.high && s.gap <= g.duck;
+  const canJump = g.lo >= 0 && has && !s.high && s.gap >= g.lo && s.gap <= g.hi && !s.airborne;
+  if (g.duckFirst) {
+    if (canDuck) return { action: "duck", rule: 1 };
+    if (canJump) return { action: "jump", rule: 0 };
+  } else {
+    if (canJump) return { action: "jump", rule: 0 };
+    if (canDuck) return { action: "duck", rule: 1 };
+  }
+  return { action: "run", rule: 2 };
+}
 
-const decide = (c) => {
-  for (let i = 0; i < RULES.length; i++) if (c[RULES[i].when]) return i;
-  return null;
-};
+function restartEpisode() {
+  const r = R();
+  if (!r) return;
+  r.restart();
+  for (let i = 0; i < 8; i++) CLOCK.step();
+  // a jump starts the game
+  act("jump");
+  for (let i = 0; i < 6; i++) CLOCK.step();
+  const s = read();
+  // DELTA baseline: restart() does not zero distanceRan in this build
+  epStart = s ? s.distance : 0;
+  sawCrash = false;
+}
 
-function renderRules(fired, conds) {
+function candName(c) {
+  return c.ctrl ? `control: ${c.ctrl}` : label(c.g);
+}
+
+function renderRules(fired, s, g) {
+  const has = s && s.gap < 99999;
+  const rows = [
+    { when: `gap ${g.lo}..${g.hi} & !airborne`, then: "jump" },
+    { when: `high & gap<=${g.duck}`, then: "duck" },
+    { when: "always", then: "run" },
+  ];
+  const matched = [
+    has && !s.high && s.gap >= g.lo && s.gap <= g.hi && !s.airborne,
+    has && s.high && g.duck > 0 && s.gap <= g.duck,
+    true,
+  ];
   const ul = $("rules");
   ul.innerHTML = "";
-  RULES.forEach((r, i) => {
+  rows.forEach((r, i) => {
     const li = document.createElement("li");
-    const m = !!(conds && conds[r.when]);
-    li.className = i === fired ? "fire" : m ? "match" : "";
+    li.className = i === fired ? "fire" : matched[i] ? "match" : "";
     li.innerHTML =
       `<span>${r.when}</span><span>=&gt;</span><span class="then">${r.then}</span>` +
-      `<span class="why">${i === fired ? "FIRING" : m ? "suppressed" : ""}</span>`;
+      `<span class="why">${i === fired ? "FIRING" : matched[i] ? "suppressed" : ""}</span>`;
     ul.appendChild(li);
   });
 }
 
 function renderTable() {
+  const S = currentState();
   const t = $("tbl");
-  t.innerHTML = "<tr><th>policy</th><th class='n'>runs</th><th class='n'>mean</th><th class='n'>best</th></tr>";
-  const means = results.map((r) => (r.runs ? r.total / r.runs : -1));
-  const top = Math.max(...means);
-  POLICIES.forEach((p, i) => {
-    const r = results[i];
-    const mean = r.runs ? Math.round(r.total / r.runs) : 0;
+  t.innerHTML =
+    "<tr><th>candidate</th><th class='n'>runs</th><th class='n'>mean</th><th class='n'>best</th></tr>";
+  const evolved = pop.filter((c) => !c.ctrl);
+  const top = Math.max(0, ...evolved.map((c) => c.mean));
+  pop.forEach((c) => {
     const tr = document.createElement("tr");
-    if (p.ctrl) tr.className = "ctrl";
-    else if (r.runs && mean === Math.round(top)) tr.className = "best";
+    if (c.ctrl) tr.className = "ctrl";
+    else if (c.mean && c.mean === top) tr.className = "best";
     tr.innerHTML =
-      `<td>${p.label}</td><td class="n">${r.runs}</td>` +
-      `<td class="n">${mean || "—"}</td><td class="n">${r.best || "—"}</td>`;
+      `<td>${candName(c)}${c.elite ? " ★" : ""}</td><td class="n">${c.runs}</td>` +
+      `<td class="n">${c.mean || "—"}</td><td class="n">${c.best || "—"}</td>`;
     t.appendChild(tr);
   });
+  $("evoinfo").textContent =
+    `session ${S.sessions} · gen ${S.generation} · ep ${S.episodes} · best ever ${S.bestEver}`;
 }
 
-function overlay(s) {
+function drawChart() {
+  const S = currentState();
+  const c = $("chart");
+  if (!c) return;
+  const ctx = c.getContext("2d");
+  ctx.clearRect(0, 0, c.width, c.height);
+  const h = S.history;
+  if (!h.length) {
+    ctx.fillStyle = "#7c8a9a";
+    ctx.font = "10px monospace";
+    ctx.fillText("no generations yet", 8, 16);
+    return;
+  }
+  const max = Math.max(...h.map((x) => Math.max(x.best, x.control)), 1);
+  const pad = 4;
+  const step = h.length > 1 ? (c.width - pad * 2) / (h.length - 1) : 0;
+  const y = (v) => c.height - pad - (v / max) * (c.height - pad * 2);
+  // control line
+  ctx.strokeStyle = "#ffb020";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  h.forEach((p, i) => (i ? ctx.lineTo(pad + i * step, y(p.control)) : ctx.moveTo(pad, y(p.control))));
+  ctx.stroke();
+  // evolved best
+  ctx.strokeStyle = "#3ddc84";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  h.forEach((p, i) => (i ? ctx.lineTo(pad + i * step, y(p.best)) : ctx.moveTo(pad, y(p.best))));
+  ctx.stroke();
+  ctx.fillStyle = "#7c8a9a";
+  ctx.font = "9px monospace";
+  ctx.fillText(`max ${max}`, pad + 2, 10);
+  ctx.fillStyle = "#3ddc84";
+  ctx.fillText("evolved", pad + 2, c.height - 4);
+  ctx.fillStyle = "#ffb020";
+  ctx.fillText("control", pad + 54, c.height - 4);
+}
+
+function overlay(s, g) {
   const r = R();
   const c = $("ov");
   const wrap = $("wrap");
+  if (!c || !wrap) return;
   if (c.width !== wrap.clientWidth || c.height !== wrap.clientHeight) {
     c.width = wrap.clientWidth;
     c.height = wrap.clientHeight;
   }
   const ctx = c.getContext("2d");
   ctx.clearRect(0, 0, c.width, c.height);
-  if (!r || !r.canvas || !s || s.gap >= 99999) return;
+  if (!r || !r.canvas || !s) return;
   const cr = r.canvas.getBoundingClientRect();
   const wr = wrap.getBoundingClientRect();
   const scale = cr.width / r.canvas.width;
-  const x = cr.left - wr.left + (r.tRex.xPos + 44 + s.gap) * scale;
-  ctx.strokeStyle = "rgba(78,161,255,.95)";
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(x, cr.top - wr.top);
-  ctx.lineTo(x, cr.top - wr.top + cr.height);
-  ctx.stroke();
-  // takeoff window of the active policy
-  const p = POLICIES[policyIdx];
-  if (p.lo >= 0 && p.hi < 99998) {
-    const x0 = cr.left - wr.left + (r.tRex.xPos + 44 + p.lo) * scale;
+  const top = cr.top - wr.top;
+  // takeoff window of the ACTIVE genome
+  if (g && g.lo >= 0 && g.hi < 99998) {
+    const x0 = cr.left - wr.left + (r.tRex.xPos + 44 + g.lo) * scale;
     ctx.fillStyle = "rgba(61,220,132,.18)";
-    ctx.fillRect(x0, cr.top - wr.top, (p.hi - p.lo) * scale, cr.height);
+    ctx.fillRect(x0, top, (g.hi - g.lo) * scale, cr.height);
+  }
+  if (s.gap < 99999) {
+    const x = cr.left - wr.left + (r.tRex.xPos + 44 + s.gap) * scale;
+    ctx.strokeStyle = "rgba(78,161,255,.95)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x, top);
+    ctx.lineTo(x, top + cr.height);
+    ctx.stroke();
   }
 }
 
-/** One harness tick: read -> decide -> act -> advance the clock. */
-function tick() {
+/** One frame: decide, act, advance the real game by one frame. */
+function frame() {
   if (!running) return;
-  const p = POLICIES[policyIdx];
+  const cand = pop[idx];
   const s = read();
-
-  if (!s) {
-    $("status").textContent = "no runner";
-    $("status").className = "tag dead";
-    return;
-  }
+  if (!s) return;
 
   if (s.crashed) {
     if (!sawCrash) {
       sawCrash = true;
-      // DELTA, not absolute: restart() does not zero distanceRan in this
-      // build (measured 9196 immediately after a restart), so absolute
-      // readings carried over and made a do-nothing control "score" 14346
-      // against ~1400 for real policies - a control beating everything 10x,
-      // which is the signature of a broken metric, not a good control.
       const dist = Math.max(0, s.distance - epStart);
-      const res = results[policyIdx];
-      res.runs++;
-      res.total += dist;
-      if (dist > res.best) res.best = dist;
-      if (dist > best) best = dist;
-      episode++;
-      log(`ep${episode} ${p.label} -> ${dist}`);
+      recordEpisode(cand, dist, pop);
+      epInCand++;
+      log(`${candName(cand)} -> ${dist}`);
       renderTable();
-      policyIdx = (policyIdx + 1) % POLICIES.length;
-      $("policy").selectedIndex = policyIdx;
-      $("pname").textContent = POLICIES[policyIdx].label;
-      // Restart and VERIFY the odometer actually zeroed before resuming.
-      // Measured bug: scores were carrying over between episodes, so a
-      // do-nothing control "scored" 14338 against ~1390 for real policies -
-      // a control beating every policy 10x, which is the signature of a
-      // broken metric rather than a good control.
-      const r = R();
-      if (r) r.restart();
-      for (let i = 0; i < 6; i++) CLOCK.step();
-      const chk = read();
-      epStart = chk ? chk.distance : 0;   // baseline for the NEXT episode
-      sawCrash = false;
+
+      if (epInCand >= EPISODES_PER) {
+        epInCand = 0;
+        idx++;
+        if (idx >= pop.length) {
+          // generation complete: rank, keep elites, breed the next
+          const { best, bestCtrl } = closeGeneration(pop);
+          const S = currentState();
+          log(
+            `gen ${S.generation}: best ${best ? best.mean : 0} vs control ${bestCtrl}` +
+              (best && best.mean <= bestCtrl ? "  [SUSPECT: control wins]" : ""),
+          );
+          pop = seedPopulation();
+          idx = 0;
+          drawChart();
+          renderTable();
+        }
+      }
     }
-  } else if (!s.started) {
-    act("jump");
-  } else {
-    const conds = condsOf(s, p);
-    const fired = decide(conds);
-    const action = fired === null ? "run" : RULES[fired].then;
-    act(action);
-    renderRules(fired, conds);
-    $("act").textContent = action;
+    restartEpisode();
+    return;
   }
 
-  // advance the REAL game by one frame using our clock
-  CLOCK.step();
-  frames++;
+  if (!s.started) {
+    act("jump");
+    CLOCK.step();
+    return;
+  }
 
-  $("status").textContent = "running";
-  $("status").className = "tag live";
+  const d = decide(s, cand.g);
+  act(d.action);
+  CLOCK.step();
+
+  $("act").textContent = d.action;
   $("dist").textContent = Math.max(0, s.distance - epStart);
-  $("best").textContent = best;
-  $("ep").textContent = episode;
-  $("frames").textContent = frames;
   $("v-gap").textContent = s.gap < 99999 ? Math.round(s.gap) : "—";
   $("v-spd").textContent = s.speed.toFixed(1);
   $("m-gap").style.width = s.gap < 99999 ? `${Math.max(0, 100 - s.gap / 4)}%` : "0%";
   $("m-spd").style.width = `${Math.min(100, (s.speed / 13) * 100)}%`;
   $("f-high").className = "flag" + (s.high ? " on" : "");
   $("f-air").className = "flag" + (s.airborne ? " on" : "");
-  overlay(s);
+  $("pname").textContent = candName(cand);
+  renderRules(d.rule, s, cand.g);
+  overlay(s, cand.g);
 }
 
 /**
- * Liveness gate. Refuses to score until the real game is proven BOTH to
- * advance under our clock AND to move obstacles toward the player.
- * The second half is the one that matters: the earlier fake-clock attempt
- * advanced distanceRan while obstacles drifted away.
+ * Liveness gate: refuse to score until the real game is proven to advance
+ * AND to move obstacles toward the player. The second half matters - an
+ * earlier fake clock advanced the odometer while obstacles drifted away.
  */
 function verifyLiveness() {
   const r = R();
   if (!r) return { ok: false, why: "Runner not constructed" };
-  if (r.crashed) r.restart();
-  for (let i = 0; i < 5; i++) CLOCK.step();
+  r.restart();
+  for (let i = 0; i < 6; i++) CLOCK.step();
   act("jump");
-  const d0 = read();
+  for (let i = 0; i < 10; i++) CLOCK.step();
+  const a = read();
   for (let i = 0; i < 40; i++) CLOCK.step();
-  const d1 = read();
-  if (!d0 || !d1) return { ok: false, why: "cannot read state" };
-  if (d1.distance <= d0.distance) {
-    return { ok: false, why: `distance not advancing (${d0.distance} -> ${d1.distance})` };
+  const b = read();
+  if (!a || !b) return { ok: false, why: "cannot read state" };
+  if (b.distance <= a.distance) {
+    return { ok: false, why: `not advancing (${a.distance} -> ${b.distance})` };
   }
-  // obstacle must approach, not recede
-  let approached = null;
   const first = (r.horizon.obstacles || [])[0];
   if (first) {
     const x0 = first.xPos;
     for (let i = 0; i < 20; i++) CLOCK.step();
-    const same = (r.horizon.obstacles || []).find((o) => o === first);
-    if (same) approached = same.xPos < x0;
+    if ((r.horizon.obstacles || []).includes(first) && first.xPos > x0) {
+      return { ok: false, why: "obstacles moving AWAY - clock corrupts the sim" };
+    }
   }
-  if (approached === false) {
-    return { ok: false, why: "obstacles moving AWAY - clock corrupts the sim" };
-  }
-  // leave a clean slate: otherwise episode 1 inherits the probe's distance
-  r.restart();
-  for (let i = 0; i < 6; i++) CLOCK.step();
-  return {
-    ok: true,
-    why: `advancing ${d0.distance}->${d1.distance}${approached ? ", obstacles approach" : ""}`,
-  };
+  return { ok: true, why: `advancing ${a.distance}->${b.distance}, obstacles approach` };
 }
 
 // ---- boot ---------------------------------------------------------------
-$("policy").innerHTML = POLICIES.map((p, i) => `<option value="${i}">${p.label}</option>`).join("");
-$("policy").onchange = (e) => {
-  policyIdx = Number(e.target.value);
-  $("pname").textContent = POLICIES[policyIdx].label;
-};
-$("pname").textContent = POLICIES[0].label;
-renderRules(null, {});
+pop = seedPopulation();
 renderTable();
+drawChart();
 
-let loop = null;
 $("run").onclick = () => {
   const v = verifyLiveness();
   $("liveness").textContent = `liveness: ${v.ok ? "OK" : "FAILED"} · ${v.why}`;
@@ -311,33 +329,80 @@ $("run").onclick = () => {
     return;
   }
   running = true;
-  const s0 = read();
-  epStart = s0 ? s0.distance : 0;
   $("run").disabled = true;
   $("stop").disabled = false;
-  // run many harness ticks per animation frame: the game's clock is ours,
-  // so this is bounded by CPU, not by wall time
+  $("status").textContent = "evolving";
+  $("status").className = "tag live";
+  restartEpisode();
+  // Unbounded: no step cap, no episode cap. Runs until stopped.
+  // Driven by BOTH rAF and setInterval because either can be throttled when
+  // the tab is backgrounded - measured, a setInterval-only loop froze with
+  // distance stuck at 4795 and one frame queued but never stepped.
+  let lastSeen = -1;
+  let stalls = 0;
+  const pump = () => {
+    if (!running) return;
+    for (let i = 0; i < 24; i++) frame();
+  };
+  const rafPump = () => {
+    if (!running) return;
+    pump();
+    rafId = window.requestAnimationFrame(rafPump);
+  };
   loop = setInterval(() => {
-    for (let i = 0; i < 8; i++) tick();
+    pump();
+    // watchdog: if the odometer has not moved between ticks, the game lost
+    // its queued frame - re-prime it rather than silently freezing.
+    const s = read();
+    const d = s ? s.distance : -1;
+    if (d === lastSeen) {
+      stalls++;
+      if (stalls > 3) {
+        stalls = 0;
+        const r = R();
+        if (r && !r.crashed) {
+          for (let i = 0; i < 4; i++) CLOCK.step();
+        } else {
+          restartEpisode();
+        }
+      }
+    } else {
+      stalls = 0;
+    }
+    lastSeen = d;
   }, 16);
+  rafId = window.requestAnimationFrame(rafPump);
 };
+
 $("stop").onclick = () => {
   running = false;
   clearInterval(loop);
+  if (rafId) window.cancelAnimationFrame(rafId);
   $("run").disabled = false;
   $("stop").disabled = true;
   $("status").textContent = "stopped";
   $("status").className = "tag";
 };
 
-// the game boots itself on DOMContentLoaded; give it a frame then report
+const resetBtn = $("reset");
+if (resetBtn) {
+  resetBtn.onclick = () => {
+    resetAll();
+    pop = seedPopulation();
+    idx = 0;
+    epInCand = 0;
+    renderTable();
+    drawChart();
+    log("population reset");
+  };
+}
+
 setTimeout(() => {
   const r = R();
   $("status").textContent = r ? "ready" : "no runner";
-  $("evoinfo").textContent = `${POLICIES.length} policies, rotating per episode`;
-  log(r ? "real game.js loaded, Runner constructed" : "Runner missing");
+  log(r ? `restored: session ${currentState().sessions}, gen ${currentState().generation}, best ever ${currentState().bestEver}` : "Runner missing");
   if (r) {
     for (let i = 0; i < 3; i++) CLOCK.step();
-    overlay(read());
+    overlay(read(), pop[0] && pop[0].g);
   }
-}, 300);
+}, 250);

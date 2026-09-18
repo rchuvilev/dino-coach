@@ -70,7 +70,8 @@ tr.ctrl td{color:var(--warn)}
   <div class="ctl">
     <button id="run" class="primary">Run</button>
     <button id="stop" disabled>Stop</button>
-    <select id="policy"></select>
+    <button id="reset">Reset</button>
+    
   </div>
 </header>
 
@@ -119,7 +120,8 @@ tr.ctrl td{color:var(--warn)}
 </section>
 
 <section class="panel">
-  <div class="phead">EPISODES <span id="evoinfo" class="tag">—</span></div>
+  <div class="phead">EVOLUTION <span id="evoinfo" class="tag">—</span></div>
+  <canvas id="chart" width="440" height="70" style="width:100%;height:auto;background:#0e1319;border-radius:6px;border:1px solid var(--line);margin-bottom:5px"></canvas>
   <table id="tbl"></table>
   <div id="log"></div>
 </section>
@@ -130,6 +132,6 @@ tr.ctrl td{color:var(--warn)}
      stepping advances nothing). -->
 <script src="clock.js?p=6"></script>
 <script src="game.js?p=6"></script>
-<script src="drive.js?p=7"></script>
+<script type="module" src="drive.js?p=11"></script>
 </body>
 </html>

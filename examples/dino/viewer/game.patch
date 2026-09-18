@@ -1,5 +1,5 @@
---- /var/minis/workspace/dino-viewer/game.orig.js
-+++ /var/minis/workspace/dino-viewer/game.js
+--- game.orig.js
++++ game.js
 @@ -274,9 +274,16 @@
              this.init()
          },
@@ -47,3 +47,16 @@
      }
  
      function GameOverPanel(canvas, textImgPos, restartImgPos, dimensions) {
+@@ -1389,7 +1405,11 @@
+     };
+     DistanceMeter.yPos = [0, 13, 27, 40, 53, 67, 80, 93, 107, 120];
+     DistanceMeter.config = {
+-        MAX_DISTANCE_UNITS: 5,
++        // HARNESS PATCH: 5 -> 6. Evolved policies exceed 99999 distance
++        // units, and setHighScore truncates with .substr(-maxScoreUnits),
++        // so the HI readout showed garbage while the stored highestScore
++        // was correct.
++        MAX_DISTANCE_UNITS: 6,
+         ACHIEVEMENT_DISTANCE: 100,
+         COEFFICIENT: 0.025,
+         FLASH_DURATION: 1000 / 4,

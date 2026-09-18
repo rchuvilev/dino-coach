@@ -1,0 +1,49 @@
+--- /var/minis/workspace/dino-viewer/game.orig.js
++++ /var/minis/workspace/dino-viewer/game.js
+@@ -274,9 +274,16 @@
+             this.init()
+         },
+         loadSounds: function() {
++            // HARNESS PATCH: the original page ships a <template> of base64
++            // audio. Sound is irrelevant to policy evaluation, and a missing
++            // template threw "Cannot read properties of null (reading
++            // 'content')" from inside onKeyDown - i.e. the game could not be
++            // STARTED at all. Degrade silently instead of failing the run.
++            var __tpl = document.getElementById(this.config.RESOURCE_TEMPLATE_ID);
++            if (!__tpl || !__tpl.content) return;
+             if (!IS_IOS && AudioContext) { // Fix 12.06.17
+                 this.audioContext = new AudioContext();
+-                var resourceTemplate = document.getElementById(this.config.RESOURCE_TEMPLATE_ID).content;
++                var resourceTemplate = __tpl.content;
+                 for (var sound in Runner.sounds) {
+                     var soundSrc = resourceTemplate.getElementById(Runner.sounds[sound]).src;
+                     soundSrc = soundSrc.substr(soundSrc.indexOf(',') + 1);
+@@ -653,7 +660,9 @@
+         raq: function() {
+             if (!this.drawPending) {
+                 this.drawPending = true;
+-                this.raqId = requestAnimationFrame(this.update.bind(this))
++                this.raqId = (window.__CLOCK && window.__CLOCK.manual)
++                    ? window.__CLOCK.queue(this.update.bind(this))
++                    : requestAnimationFrame(this.update.bind(this))
+             }
+         },
+         isRunning: function() {
+@@ -907,8 +916,15 @@
+     }
+ 
+     function getTimeStamp() {
+-        //return IS_IOS ? new Date().getTime() : performance.now()
+-        return new Date().getTime(); // Safari 5.17 Fix 12.06.17
++        // HARNESS PATCH: a controllable clock.
++        // Everything in this game derives from getTimeStamp() - deltaTime,
++        // distanceRan, obstacle movement, the jump arc. Overriding it is the
++        // ONE place that makes the simulation steppable without corrupting
++        // it. Contrast with the earlier failed attempt of overwriting
++        // Runner.time from outside, which produced obstacles drifting AWAY
++        // from the player and distanceRan reading 650845248688.
++        if (window.__CLOCK && window.__CLOCK.manual) return window.__CLOCK.t;
++        return new Date().getTime();
+     }
+ 
+     function GameOverPanel(canvas, textImgPos, restartImgPos, dimensions) {

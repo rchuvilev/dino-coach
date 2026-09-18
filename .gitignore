@@ -1,3 +1,5 @@
 node_modules/
 .data/
 *.log
+examples/dino/viewer/game.js
+examples/dino/viewer/game.orig.js

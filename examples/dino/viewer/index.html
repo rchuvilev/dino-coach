@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>dino · real game · live</title>
+<style>
+:root{--bg:#0d1014;--panel:#151a21;--line:#232b35;--fg:#d7e0ea;--dim:#7c8a9a;
+--accent:#4ea1ff;--ok:#3ddc84;--warn:#ffb020;--bad:#ff5d5d;--fire:#ff3d7f}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);padding:6px;
+ font:12px/1.35 ui-monospace,Menlo,monospace;display:flex;flex-direction:column;gap:6px}
+h1{font-size:12px;margin:0;color:var(--accent);letter-spacing:.06em}
+header{display:flex;gap:6px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+.ctl{display:flex;gap:5px;align-items:center;flex-wrap:wrap}
+button,select{background:var(--panel);color:var(--fg);border:1px solid var(--line);
+ border-radius:6px;padding:4px 9px;font:inherit;cursor:pointer}
+button.primary{background:var(--accent);color:#06121f;border-color:var(--accent);font-weight:700}
+button:disabled{opacity:.4}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:6px}
+.phead{font-size:9px;letter-spacing:.1em;color:var(--dim);margin-bottom:4px;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.tag{background:#1d2530;border:1px solid var(--line);border-radius:4px;padding:1px 6px;font-size:10px}
+.tag.live{background:rgba(61,220,132,.15);border-color:var(--ok);color:var(--ok)}
+.tag.dead{background:rgba(255,93,93,.15);border-color:var(--bad);color:var(--bad)}
+.tag.warn{background:rgba(255,176,32,.15);border-color:var(--warn);color:var(--warn)}
+/* the real game mounts here */
+#wrap{position:relative;background:#fff;border-radius:6px;border:1px solid var(--line);overflow:hidden}
+.runner-container{position:relative!important;margin:0!important}
+canvas.runner-canvas{width:100%!important;height:auto!important;display:block}
+#ov{position:absolute;inset:0;pointer-events:none}
+/* sprite sheets are IMAGE SOURCES for the canvas, never displayed.
+   The original page hides them; leaving them visible painted two raw
+   sprite strips into the UI. */
+#offline-resources{display:none!important}
+#offline-resources img{display:none!important}
+.stats{display:flex;gap:12px;margin-top:4px;font-size:10px;color:var(--dim);flex-wrap:wrap}
+.stats b{color:var(--fg)}
+.grid{display:grid;grid-template-columns:minmax(0,1fr) 148px;gap:6px}
+.meter{display:flex;align-items:center;gap:6px;font-size:10px;margin-bottom:3px}
+.meter label{width:40px;flex:none;color:var(--dim)}
+.bar{flex:1;height:6px;background:#0e1319;border-radius:4px;overflow:hidden}
+.bar i{display:block;height:100%;width:0;background:var(--accent)}
+.meter b{width:30px;text-align:right}
+.flags{display:flex;gap:5px;margin-top:4px}
+.flag{flex:1;text-align:center;font-size:9px;padding:2px;border-radius:4px;
+ background:#0e1319;color:var(--dim);border:1px solid var(--line)}
+.flag.on{background:rgba(78,161,255,.18);color:var(--accent);border-color:var(--accent)}
+.rules{list-style:none;margin:0;padding:0;counter-reset:r}
+.rules li{display:flex;align-items:center;gap:6px;padding:2px 6px;border-radius:5px;
+ border:1px solid transparent;font-size:11px;color:var(--dim)}
+.rules li::before{counter-increment:r;content:counter(r);width:13px;flex:none;
+ text-align:center;font-size:9px;color:var(--dim)}
+.rules li.match{color:var(--fg);background:#18202a}
+.rules li.fire{color:#fff;background:rgba(255,61,127,.16);border-color:var(--fire)}
+.rules .then{color:var(--accent);font-weight:700}
+.rules li.fire .then{color:var(--fire)}
+.rules .why{margin-left:auto;font-size:9px;color:var(--dim)}
+table{width:100%;border-collapse:collapse;font-size:10px}
+th,td{text-align:left;padding:2px 4px;border-bottom:1px solid var(--line)}
+th{color:var(--dim);font-weight:400;font-size:9px}
+td.n{text-align:right;font-variant-numeric:tabular-nums}
+tr.best td{color:var(--ok)}
+tr.ctrl td{color:var(--warn)}
+#log{font-size:10px;color:var(--dim);max-height:40px;overflow:auto;white-space:pre-wrap;margin-top:4px}
+</style>
+</head>
+<body>
+<header>
+  <h1>dino · real game · live</h1>
+  <div class="ctl">
+    <button id="run" class="primary">Run</button>
+    <button id="stop" disabled>Stop</button>
+    <select id="policy"></select>
+  </div>
+</header>
+
+<section class="panel">
+  <div class="phead">TARGET
+    <span id="status" class="tag">booting</span>
+    <span id="liveness" class="tag warn">liveness: unverified</span>
+    <span class="tag">chromedino game.js · manual clock</span>
+  </div>
+  <!-- the REAL game's own container/canvas is injected here by game.js -->
+  <div id="wrap">
+    <div id="outer-container" class="offline">
+      <div id="main-frame-error" class="interstitial-wrapper">
+        <div id="main-content"></div>
+        <div id="offline-resources">
+          <img id="offline-resources-1x" src="offline-sprite-1x.png">
+          <img id="offline-resources-2x" src="offline-sprite-2x.png">
+        </div>
+      </div>
+    </div>
+    <canvas id="ov"></canvas>
+  </div>
+  <div class="stats">
+    <span>episode <b id="ep">0</b></span>
+    <span>distance <b id="dist">0</b></span>
+    <span>best <b id="best">0</b></span>
+    <span>action <b id="act">—</b></span>
+    <span>frames <b id="frames">0</b></span>
+  </div>
+</section>
+
+<section class="grid">
+  <div class="panel">
+    <div class="phead">STRATEGY <span id="pname" class="tag">—</span></div>
+    <ol id="rules" class="rules"></ol>
+  </div>
+  <aside class="panel">
+    <div class="phead">PERCEPTION</div>
+    <div class="meter"><label>gap</label><div class="bar"><i id="m-gap"></i></div><b id="v-gap">—</b></div>
+    <div class="meter"><label>speed</label><div class="bar"><i id="m-spd"></i></div><b id="v-spd">—</b></div>
+    <div class="flags">
+      <span id="f-high" class="flag">high</span>
+      <span id="f-air" class="flag">air</span>
+    </div>
+  </aside>
+</section>
+
+<section class="panel">
+  <div class="phead">EPISODES <span id="evoinfo" class="tag">—</span></div>
+  <table id="tbl"></table>
+  <div id="log"></div>
+</section>
+
+<!-- The clock MUST be installed before game.js: Runner queues its first
+     frame during boot, and a callback registered against the real rAF is
+     invisible to our queue (symptom: raqId=1 while CLOCK.cbs is empty, so
+     stepping advances nothing). -->
+<script src="clock.js?p=6"></script>
+<script src="game.js?p=6"></script>
+<script src="drive.js?p=7"></script>
+</body>
+</html>

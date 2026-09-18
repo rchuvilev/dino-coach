@@ -14,6 +14,8 @@ import {
   label,
   recordEpisode,
   resetAll,
+  bandOf,
+  BANDS,
   exportState,
   generationComplete,
   importState,
@@ -116,6 +118,8 @@ function restartEpisode() {
   const s = read();
   // DELTA baseline: restart() does not zero distanceRan in this build
   epStart = s ? s.distance : 0;
+  lastDist = 0;
+  bandDist = BANDS.map(() => 0);
   sawCrash = false;
 }
 
@@ -242,6 +246,8 @@ function overlay(s, g) {
 
 /** One frame: decide, act, advance the real game by one frame. */
 let epFrames = 0;
+let bandDist = BANDS.map(() => 0);   // distance travelled per speed band
+let lastDist = 0;
 const EP_FRAME_CAP = 9000;  // ~150s of game time; beyond this the candidate
                             // is clearly strong and further frames add no
                             // ranking information, only wall-clock delay.
@@ -256,7 +262,9 @@ function frame() {
   // immortal policy stall the whole generation
   if (!s.crashed && ++epFrames > EP_FRAME_CAP) {
     const dist = Math.max(0, s.distance - epStart);
-    recordEpisode(cand, dist, pop);
+    recordEpisode(cand, dist, pop, bandDist);
+    bandDist = BANDS.map(() => 0);
+    lastDist = 0;
     log(`${candName(cand)} -> ${dist} (capped)`);
     tableDirty = true;
     epFrames = 0;
@@ -268,7 +276,9 @@ function frame() {
     if (!sawCrash) {
       sawCrash = true;
       const dist = Math.max(0, s.distance - epStart);
-      recordEpisode(cand, dist, pop);
+      recordEpisode(cand, dist, pop, bandDist);
+      bandDist = BANDS.map(() => 0);
+      lastDist = 0;
       epInCand++;
       log(`${candName(cand)} -> ${dist}`);
       tableDirty = true;
@@ -306,6 +316,12 @@ function frame() {
     CLOCK.step();
     return;
   }
+
+  // attribute progress to the band that was active while it was earned
+  const here = Math.max(0, s.distance - epStart);
+  const gained = Math.max(0, here - lastDist);
+  bandDist[bandOf(s.speed)] += gained;
+  lastDist = here;
 
   const d = decide(s, cand.g);
   act(d.action);

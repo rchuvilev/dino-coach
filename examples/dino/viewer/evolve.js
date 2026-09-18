@@ -29,6 +29,7 @@ const LO_MIN = 15, LO_MAX = 55;   // takeoff must start inside the jump arc
 const HI_MAX = 110;               // beyond this the tRex lands ON the obstacle
 
 function clampGenome(g) {
+  if (!g.bands) g.bands = BANDS.map(() => ({ lo: 0, w: 0 }));
   g.loA = Math.min(LO_MAX, Math.max(LO_MIN, g.loA));
   g.loB = Math.max(-8, Math.min(8, g.loB));
   g.widthA = Math.min(HI_MAX - LO_MIN, Math.max(10, g.widthA));
@@ -46,14 +47,36 @@ function randomGenome(rnd) {
     duck: Math.round(20 + rnd() * 60),
     // rule order: which check wins when several match
     duckFirst: rnd() < 0.5,
+    // start at zero offsets: identical to option A until evolution finds a
+    // reason to differentiate a band
+    bands: BANDS.map(() => ({ lo: 0, w: 0 })),
   });
+}
+
+/** Speed bands. Boundaries sit where the measured optimum shifts. */
+export const BANDS = [
+  { name: "slow", max: 8 },
+  { name: "mid", max: 10.5 },
+  { name: "fast", max: 99 },
+];
+
+export function bandOf(speed) {
+  const s = speed || 6;
+  for (let i = 0; i < BANDS.length; i++) if (s < BANDS[i].max) return i;
+  return BANDS.length - 1;
 }
 
 /** Resolve the genome at a given speed. This is the whole of option A. */
 export function windowAt(g, speed) {
   const d = (speed || 6) - 6;
-  let lo = g.loA + g.loB * d;
-  let width = g.widthA + g.widthB * d;
+  // OPTION B: a per-band offset layered on the speed-linear base. Offsets of
+  // zero reduce exactly to option A, so the richer space CONTAINS it and
+  // cannot score worse given enough search - the same containment argument
+  // that justified A over the constant genome.
+  const band = bandOf(speed);
+  const off = (g.bands && g.bands[band]) || { lo: 0, w: 0 };
+  let lo = g.loA + g.loB * d + off.lo;
+  let width = g.widthA + g.widthB * d + off.w;
   // A NaN here means a genome of the wrong shape reached the policy, which
   // reads as "never jump" and is indistinguishable from a bad strategy.
   // Fail loudly-ish: fall back to a known-viable window instead.
@@ -68,23 +91,30 @@ export function windowAt(g, speed) {
 
 function mutate(g, rnd) {
   const n = { ...g };
-  const pick = Math.floor(rnd() * 5);
+  const pick = Math.floor(rnd() * 6);
   const nudge = () => Math.round((rnd() - 0.5) * 30);
   const slope = () => +((rnd() - 0.5) * 4).toFixed(2);
   if (pick === 0) n.loA = n.loA + nudge();
   else if (pick === 1) n.widthA = n.widthA + nudge();
   else if (pick === 2) n.duck = n.duck + nudge();
   else if (pick === 3) n.duckFirst = !n.duckFirst;
-  else {
-    // mutate a SLOPE: this is the new axis option A adds
+  else if (pick === 4) {
+    // mutate a SLOPE: the axis option A adds
     if (rnd() < 0.5) n.loB = +(n.loB + slope()).toFixed(2);
     else n.widthB = +(n.widthB + slope()).toFixed(2);
+  } else {
+    // mutate ONE BAND's offset: the axis option B adds
+    n.bands = (n.bands || BANDS.map(() => ({ lo: 0, w: 0 }))).map((b) => ({ ...b }));
+    const i = Math.floor(rnd() * n.bands.length);
+    if (rnd() < 0.5) n.bands[i].lo = Math.max(-30, Math.min(30, n.bands[i].lo + nudge()));
+    else n.bands[i].w = Math.max(-30, Math.min(30, n.bands[i].w + nudge()));
   }
   return clampGenome(n);
 }
 
 const key = (g) =>
-  `${g.loA}|${g.loB}|${g.widthA}|${g.widthB}|${g.duck}|${g.duckFirst ? 1 : 0}`;
+  `${g.loA}|${g.loB}|${g.widthA}|${g.widthB}|${g.duck}|${g.duckFirst ? 1 : 0}|` +
+  (g.bands || []).map((b) => `${b.lo},${b.w}`).join(";");
 const label = (g) => {
   if (g.ctrlLabel) return g.ctrlLabel;
   const sgn = (v) => (v >= 0 ? `+${v}` : `${v}`);
@@ -123,7 +153,10 @@ function blank() {
 function migrateGenome(g) {
   if (!g || typeof g !== "object") return null;
   if (g.ctrl || g.never || g.always) return g;
-  if (g.loA !== undefined) return g;              // already current
+  if (g.loA !== undefined) {
+    if (!g.bands) g.bands = BANDS.map(() => ({ lo: 0, w: 0 }));
+    return g;
+  }
   if (g.lo !== undefined && g.hi !== undefined) { // v0: constant window
     return clampGenome({
       loA: g.lo,
@@ -176,13 +209,19 @@ S.sessions = (S.sessions || 0) + 1;
 S.lastOpened = Date.now();
 save(S);
 
-const POP = 6; // evaluated per generation, plus 2 controls
+// 24 candidates x 4 episodes = 96 episodes per generation. At the measured
+// ~366 episodes/sec ceiling that is still sub-second of pure simulation, so
+// the limit is DOM/paint, not the search. Larger population beats more
+// episodes per candidate here: with cv 0.32 the median of 4 is noisy, but
+// selecting the best of 24 noisy estimates still moves faster than the best
+// of 6 precise ones.
+const POP = 24;
 // cv measured at 0.32 for a fixed genome, so a 3-episode mean carries a
 // standard error too large to select on. 5 gives a usable median while
 // keeping a generation (5 x 6 = 30 episodes) observable: at 9 episodes per
 // candidate a generation took many minutes and gen stayed 0.
-const EPISODES_PER = 5;
-const ELITE = 3;
+const EPISODES_PER = 4;
+const ELITE = 5;
 
 function seedPopulation() {
   const out = [];
@@ -220,11 +259,24 @@ function seedPopulation() {
     // 27 generations reported the identical best of 18255.
     out.push({ g: e.g, runs: 0, total: 0, best: 0, mean: 0, samples: [], elite: true });
   }
-  while (out.length < POP) {
-    const parent = out.length && rnd() < 0.7 ? out[Math.floor(rnd() * out.length)].g : null;
-    const g = parent ? mutate(parent, rnd) : randomGenome(rnd);
+  // Fill by TOURNAMENT: pick 2 elites at random, breed from the better one.
+  // Truncation to the top ELITE at POP=24 throws away too much diversity;
+  // tournament keeps selection pressure while letting mid-rank genomes
+  // reproduce. A fraction stays fully random to avoid premature convergence.
+  let guard = 0;
+  while (out.length < POP && guard++ < POP * 20) {
+    let g;
+    if (out.length >= 2 && rnd() < 0.85) {
+      const a = out[Math.floor(rnd() * out.length)];
+      const b = out[Math.floor(rnd() * out.length)];
+      const winner = (a.median || a.mean || 0) >= (b.median || b.mean || 0) ? a : b;
+      g = mutate(winner.g, rnd);
+      if (rnd() < 0.3) g = mutate(g, rnd);   // occasional double step
+    } else {
+      g = randomGenome(rnd);
+    }
     if (out.some((c) => key(c.g) === key(g))) continue;
-    out.push({ g, runs: 0, total: 0, best: 0, mean: 0 });
+    out.push({ g, runs: 0, total: 0, best: 0, mean: 0, samples: [] });
   }
   for (const c of CONTROLS) out.push({ g: c, runs: 0, total: 0, best: 0, mean: 0, ctrl: c.ctrl });
   return out;
@@ -291,7 +343,7 @@ export function resetAll() {
 
 export { seedPopulation, mutate, randomGenome, key, label, ELITE, EPISODES_PER, rnd, clampGenome, save };
 
-export function recordEpisode(cand, dist, pop) {
+export function recordEpisode(cand, dist, pop, bandDist) {
   cand.runs++;
   cand.total += dist;
   cand.best = Math.max(cand.best, dist);
@@ -301,6 +353,14 @@ export function recordEpisode(cand, dist, pop) {
   // generation and would make mean/median disagree wildly (observed 44690
   // vs 8300 for one candidate with 33 samples against a budget of 5).
   cand.samples = (cand.samples || []).concat(dist).slice(-EPISODES_PER);
+  // per-band credit: distance earned WHILE each band was active. This is what
+  // makes option B more than extra parameters - a band's offset is judged on
+  // the progress it actually produced, not on the episode total.
+  if (bandDist) {
+    cand.bandTotals = (cand.bandTotals || bandDist.map(() => 0)).map(
+      (v, i) => v + (bandDist[i] || 0),
+    );
+  }
   const sorted = [...cand.samples].sort((a, b) => a - b);
   cand.median = sorted[Math.floor(sorted.length / 2)];
   S.episodes++;
@@ -329,6 +389,7 @@ export function recordEpisode(cand, dist, pop) {
         // dropping them made median undefined on reload, which silently
         // disabled both ranking and generation close.
         samples: (c.samples || []).slice(-EPISODES_PER),
+        bandTotals: c.bandTotals,
         median: c.median,
       }));
   }

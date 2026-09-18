@@ -287,6 +287,24 @@ function migrateGenome(g) {
   return null;  // unrecognised: drop rather than feed NaN into the policy
 }
 
+/** Structural validation: a state can parse and still be unusable. */
+function validate(S) {
+  if (!S || typeof S !== "object") return false;
+  for (const list of [S.population, S.inProgress]) {
+    if (!list) continue;
+    if (!Array.isArray(list)) return false;
+    for (const c of list) {
+      if (!c || typeof c !== "object") return false;
+      const g = c.g || c;
+      // every genome MUST carry a numeric takeoff base, or decide() throws
+      if (!g || typeof g !== "object") return false;
+      if (g.loA !== undefined && typeof g.loA !== "number") return false;
+    }
+  }
+  if (S.generation !== undefined && typeof S.generation !== "number") return false;
+  return true;
+}
+
 function migrate(S) {
   if (!S || typeof S !== "object") return blank();
   const fix = (arr) =>
@@ -305,7 +323,16 @@ function migrate(S) {
 function load() {
   try {
     const raw = localStorage.getItem(STORE_KEY);
-    if (raw) return migrate(JSON.parse(raw));
+    if (raw) {
+      const parsed = migrate(JSON.parse(raw));
+      if (validate(parsed)) return parsed;
+      // Structurally broken: discard rather than run on it. Silently
+      // returning a bad state is what makes a run appear stuck.
+      try { localStorage.removeItem(STORE_KEY); } catch { /* ignore */ }
+      if (typeof console !== "undefined") {
+        console.warn("[dino] stored state was invalid and has been discarded");
+      }
+    }
   } catch {
     /* storage may be unavailable on some schemes */
   }

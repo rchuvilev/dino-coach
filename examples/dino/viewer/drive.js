@@ -836,6 +836,7 @@ $("run").onclick = () => {
   let watchdogRef = () => {};
   const pump = () => {
     if (!running) return;
+    try {
     const rate = rateEl ? Number(rateEl.value) : 12;
     const now = performance.now();
     const elapsed = now - lastPump;
@@ -862,7 +863,18 @@ $("run").onclick = () => {
       rate === 0
         ? 600
         : Math.min(240, Math.max(1, Math.round((elapsed / (1000 / 60)) * rate)));
-    for (let i = 0; i < owed; i++) frame();
+      for (let i = 0; i < owed; i++) frame();
+    } catch (e) {
+      // A throw inside frame() previously killed the loop with no trace: the
+      // timer kept firing, pump() kept throwing, and the UI still read
+      // "evolving". Surface it and stop cleanly instead.
+      running = false;
+      $("status").textContent = "error";
+      $("status").className = "tag dead";
+      log(`ERROR: ${String((e && e.message) || e).slice(0, 80)}`);
+      $("run").disabled = false;
+      $("stop").disabled = true;
+    }
   };
   // The harness PATCHES window.requestAnimationFrame to queue into __CLOCK,
   // so using it here deadlocks: the pump waits on a frame that only the pump

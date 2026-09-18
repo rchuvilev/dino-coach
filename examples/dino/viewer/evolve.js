@@ -35,6 +35,8 @@ function clampGenome(g) {
   g.widthA = Math.min(HI_MAX - LO_MIN, Math.max(10, g.widthA));
   g.widthB = Math.max(-8, Math.min(8, g.widthB));
   g.duck = Math.min(90, Math.max(5, g.duck));
+  g.panic = Math.min(34, Math.max(0, g.panic === undefined ? 0 : g.panic));
+  g.late = Math.min(1, Math.max(0.15, g.late === undefined ? 1 : g.late));
   return g;
 }
 
@@ -44,9 +46,21 @@ function randomGenome(rnd) {
     loB: +((rnd() - 0.5) * 8).toFixed(2),
     widthA: Math.round(20 + rnd() * 60),
     widthB: +((rnd() - 0.5) * 8).toFixed(2),
+    // Birds (PTERODACTYL) require minSpeed 8.5 in the game source, so they
+    // only appear in runs that survive that long - measured 5 of 10 runs for
+    // a strong genome. The duck gene therefore looks like dead code until a
+    // policy is good enough to reach them.
     duck: Math.round(20 + rnd() * 60),
     // rule order: which check wins when several match
     duckFirst: rnd() < 0.5,
+    // PANIC jump: if the window was missed (typically because the dino was
+    // airborne through it) jump anyway below this gap rather than running
+    // into the obstacle. 0 disables, so evolution can switch it off.
+    panic: Math.round(rnd() * 25),
+    // fraction of the window to actually use, measured from its LOWER edge.
+    // 1 = old behaviour (fire on entry), 0.3 = wait until the obstacle is
+    // close. Firing on entry left the dino airborne 56% of all frames.
+    late: +(0.6 + rnd() * 0.4).toFixed(2),
     // start at zero offsets: identical to option A until evolution finds a
     // reason to differentiate a band
     bands: BANDS.map(() => ({ lo: 0, w: 0 })),
@@ -91,7 +105,7 @@ export function windowAt(g, speed) {
 
 function mutate(g, rnd) {
   const n = { ...g };
-  const pick = Math.floor(rnd() * 6);
+  const pick = Math.floor(rnd() * 8);
   const nudge = () => Math.round((rnd() - 0.5) * 30);
   const slope = () => +((rnd() - 0.5) * 4).toFixed(2);
   if (pick === 0) n.loA = n.loA + nudge();
@@ -102,6 +116,10 @@ function mutate(g, rnd) {
     // mutate a SLOPE: the axis option A adds
     if (rnd() < 0.5) n.loB = +(n.loB + slope()).toFixed(2);
     else n.widthB = +(n.widthB + slope()).toFixed(2);
+  } else if (pick === 6) {
+    n.panic = Math.max(0, Math.min(34, (n.panic || 0) + Math.round((rnd() - 0.5) * 16)));
+  } else if (pick === 7) {
+    n.late = +Math.max(0.15, Math.min(1, (n.late === undefined ? 1 : n.late) + (rnd() - 0.5) * 0.4)).toFixed(2);
   } else {
     // mutate ONE BAND's offset: the axis option B adds
     n.bands = (n.bands || BANDS.map(() => ({ lo: 0, w: 0 }))).map((b) => ({ ...b }));
@@ -113,7 +131,7 @@ function mutate(g, rnd) {
 }
 
 const key = (g) =>
-  `${g.loA}|${g.loB}|${g.widthA}|${g.widthB}|${g.duck}|${g.duckFirst ? 1 : 0}|` +
+  `${g.loA}|${g.loB}|${g.widthA}|${g.widthB}|${g.duck}|${g.duckFirst ? 1 : 0}|${g.panic || 0}|` +
   (g.bands || []).map((b) => `${b.lo},${b.w}`).join(";");
 const label = (g) => {
   if (g.ctrlLabel) return g.ctrlLabel;
@@ -264,6 +282,9 @@ function seedPopulation() {
     // genome carries forward, MEASUREMENTS DO NOT. Keeping runs/samples made
     // an elite's stale median win every generation without being re-tested -
     // 27 generations reported the identical best of 18255.
+    // median deliberately NOT carried: an elite must re-earn its rank from
+    // fresh episodes each generation. Carrying it let a lucky batch reign
+    // for 42 consecutive generations without being retested.
     out.push({ g: e.g, runs: 0, total: 0, best: 0, mean: 0, samples: [], elite: true });
   }
   // Fill by TOURNAMENT: pick 2 elites at random, breed from the better one.
@@ -374,11 +395,26 @@ export function recordEpisode(cand, dist, pop, bandDist) {
   if (!cand.ctrl && dist > S.bestEver) {
     S.bestEver = dist;          // single-episode record: a luck measure
   }
-  // bestMedian is the REPRODUCIBLE figure - what this genome typically does.
-  // Only credit it once a candidate has enough episodes to be trustworthy.
-  if (!cand.ctrl && cand.runs >= EPISODES_PER && cand.median > (S.bestMedian || 0)) {
-    S.bestMedian = cand.median;
-    S.bestGenome = cand.g;
+  // bestMedian must be REPRODUCIBLE, not a lucky batch. A single 8-episode
+  // median claimed 19139 while 12 fresh runs of the same genome gave 10245 -
+  // enshrining the discovery value makes it unbeatable by construction.
+  // A challenger is recorded as PENDING and only crowned when a later,
+  // independent batch confirms it.
+  if (!cand.ctrl && cand.runs >= EPISODES_PER) {
+    const pending = S.pendingBest;
+    if (pending && key(pending.g) === key(cand.g)) {
+      // second independent batch for the same genome: confirm with the WORSE
+      // of the two medians, so a champion is never credited above what it
+      // has repeated.
+      const confirmed = Math.min(pending.median, cand.median);
+      if (confirmed > (S.bestMedian || 0)) {
+        S.bestMedian = confirmed;
+        S.bestGenome = cand.g;
+      }
+      S.pendingBest = null;
+    } else if (cand.median > (S.bestMedian || 0)) {
+      S.pendingBest = { g: cand.g, median: cand.median };
+    }
   }
   // Persist EVERY episode. Saving only at generation close meant a session
   // stopped mid-generation lost all of it - measured 6 episodes and a best of

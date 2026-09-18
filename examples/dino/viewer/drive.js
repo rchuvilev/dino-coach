@@ -99,7 +99,18 @@ function decide(s, g) {
   // OPTION A: the window is resolved from the CURRENT speed, so one genome
   // expresses a different takeoff distance early and late in the run.
   const w = windowAt(g, s.speed);
-  const canJump = has && !s.high && s.gap >= w.lo && s.gap <= w.hi && !s.airborne;
+  // Latest-safe takeoff: fire in the LOWER part of the window, not on entry.
+  // Firing on entry kept the dino airborne 56% of all frames and wasted 22
+  // of 35 jumps, which is what caused missed windows for the next obstacle.
+  const lateFrac = g.late === undefined ? 1 : g.late;
+  const effHi = w.lo + (w.hi - w.lo) * Math.max(0.15, Math.min(1, lateFrac));
+  const canJump = has && !s.high && s.gap >= w.lo && s.gap <= effHi && !s.airborne;
+  // PANIC: the window was missed (usually because the dino was airborne
+  // through it) and the obstacle is now close. Measured: 12 of 14 deaths
+  // were "grounded at impact, never jumped" for exactly this reason.
+  const panicGap = g.panic || 0;
+  const canPanic =
+    panicGap > 0 && has && !s.high && !s.airborne && s.gap > 0 && s.gap <= panicGap;
   if (g.duckFirst) {
     if (canDuck) return { action: "duck", rule: 1 };
     if (canJump) return { action: "jump", rule: 0 };
@@ -107,6 +118,7 @@ function decide(s, g) {
     if (canJump) return { action: "jump", rule: 0 };
     if (canDuck) return { action: "duck", rule: 1 };
   }
+  if (canPanic) return { action: "jump", rule: 0 };
   return { action: "run", rule: 2 };
 }
 

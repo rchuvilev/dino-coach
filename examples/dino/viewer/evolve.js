@@ -140,6 +140,42 @@ export function windowAt(g, speed) {
   return { lo, hi: lo + width };
 }
 
+
+/**
+ * Uniform crossover: each gene comes from one parent or the other.
+ *
+ * Mutation alone explores a NEIGHBOURHOOD; it cannot combine a parent with
+ * good takeoff timing and a parent with good arc selection. Crossover mixes
+ * traits discovered independently - the "take the good parts from the good
+ * runs" behaviour that mutation-only search cannot produce.
+ *
+ * ctxAdj merges per-situation rather than wholesale, because those entries
+ * are independent per-state corrections and a child should be able to
+ * inherit the better one for each state separately.
+ */
+export function crossover(a, b, rnd) {
+  const child = {};
+  for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) {
+    if (k === "ctxAdj" || k === "bands" || k.startsWith("__")) continue;
+    child[k] = rnd() < 0.5 ? a[k] : b[k];
+  }
+  const ca = a.ctxAdj || {};
+  const cb = b.ctxAdj || {};
+  child.ctxAdj = {};
+  for (const k of new Set([...Object.keys(ca), ...Object.keys(cb)])) {
+    const va = ca[k];
+    const vb = cb[k];
+    child.ctxAdj[k] = va === undefined ? vb : vb === undefined ? va : (rnd() < 0.5 ? va : vb);
+  }
+  if (a.bands || b.bands) {
+    const ba = a.bands || [];
+    const bb = b.bands || [];
+    child.bands = (ba.length ? ba : bb).map((_, i) =>
+      rnd() < 0.5 ? { ...(ba[i] || { lo: 0, w: 0 }) } : { ...(bb[i] || { lo: 0, w: 0 }) });
+  }
+  return clampGenome(child);
+}
+
 function mutate(g, rnd) {
   const n = { ...g };
   // 15% of mutations are LARGE. With only small nudges the population never
@@ -368,11 +404,18 @@ function seedPopulation() {
   while (out.length < POP && guard++ < POP * 20) {
     let g;
     if (out.length >= 2 && rnd() < 0.72) {
-      const a = out[Math.floor(rnd() * out.length)];
-      const b = out[Math.floor(rnd() * out.length)];
-      const winner = (a.median || a.mean || 0) >= (b.median || b.mean || 0) ? a : b;
-      g = mutate(winner.g, rnd);
-      if (rnd() < 0.3) g = mutate(g, rnd);   // occasional double step
+      // two independent tournaments -> two winners -> MIX them, then mutate.
+      // Picking a single winner and mutating explores one neighbourhood;
+      // crossing two winners combines traits discovered separately.
+      const pick = () => {
+        const a = out[Math.floor(rnd() * out.length)];
+        const b = out[Math.floor(rnd() * out.length)];
+        return (a.median || a.mean || 0) >= (b.median || b.mean || 0) ? a : b;
+      };
+      const p1 = pick();
+      const p2 = pick();
+      g = rnd() < 0.6 && p1 !== p2 ? crossover(p1.g, p2.g, rnd) : mutate(p1.g, rnd);
+      if (rnd() < 0.5) g = mutate(g, rnd);
     } else {
       g = randomGenome(rnd);
     }

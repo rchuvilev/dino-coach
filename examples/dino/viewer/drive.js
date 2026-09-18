@@ -1060,6 +1060,16 @@ if (resetBtn) {
       $("run").disabled = false;
       $("stop").disabled = true;
     }
+    // clear ALL module-level run state, not just the stores. jumpLatched is
+    // released only when the game steps, so a Reset during a jump left it
+    // stuck true and the next Run could never take off.
+    jumpLatched = false;
+    epFrames = 0;
+    sawCrash = false;
+    tel = null;
+    lastDist = 0;
+    idx = 0;
+    epInCand = 0;
     // the learned model is part of the session's knowledge and must go too
     knn.clear();
     analysis = {};

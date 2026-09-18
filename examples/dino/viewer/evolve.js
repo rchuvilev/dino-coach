@@ -189,14 +189,18 @@ function seedPopulation() {
   // resume a generation that was interrupted mid-way
   if (S.inProgress && S.inProgress.length) {
     for (const c of S.inProgress) {
+      // Trim to the episode budget. Samples beyond it are from an earlier
+      // generation of the same genome and must not inflate the statistic.
+      const samples = (c.samples || []).slice(-EPISODES_PER);
+      const sorted = [...samples].sort((a, b) => a - b);
       out.push({
         g: c.g,
-        runs: c.runs || 0,
-        total: c.total || 0,
-        best: c.best || 0,
-        mean: c.mean || 0,
-        samples: c.samples || [],
-        median: c.median,
+        runs: samples.length,
+        total: samples.reduce((a, b) => a + b, 0),
+        best: samples.length ? Math.max(...samples) : 0,
+        mean: samples.length ? Math.round(samples.reduce((a, b) => a + b, 0) / samples.length) : 0,
+        samples,
+        median: samples.length ? sorted[Math.floor(sorted.length / 2)] : undefined,
         elite: true,
       });
     }
@@ -211,7 +215,10 @@ function seedPopulation() {
   }
   // carry elites forward - this is the persistence that makes it cumulative
   for (const e of (S.population || []).slice(0, ELITE)) {
-    out.push({ g: e.g, runs: 0, total: 0, best: 0, mean: 0, elite: true });
+    // genome carries forward, MEASUREMENTS DO NOT. Keeping runs/samples made
+    // an elite's stale median win every generation without being re-tested -
+    // 27 generations reported the identical best of 18255.
+    out.push({ g: e.g, runs: 0, total: 0, best: 0, mean: 0, samples: [], elite: true });
   }
   while (out.length < POP) {
     const parent = out.length && rnd() < 0.7 ? out[Math.floor(rnd() * out.length)].g : null;
@@ -290,7 +297,10 @@ export function recordEpisode(cand, dist, pop) {
   cand.best = Math.max(cand.best, dist);
   cand.mean = Math.round(cand.total / cand.runs);
   // keep the distribution: the mean is dragged by a long upper tail
-  cand.samples = (cand.samples || []).concat(dist);
+  // bounded by the episode budget: samples beyond it belong to a previous
+  // generation and would make mean/median disagree wildly (observed 44690
+  // vs 8300 for one candidate with 33 samples against a budget of 5).
+  cand.samples = (cand.samples || []).concat(dist).slice(-EPISODES_PER);
   const sorted = [...cand.samples].sort((a, b) => a - b);
   cand.median = sorted[Math.floor(sorted.length / 2)];
   S.episodes++;
@@ -318,7 +328,7 @@ export function recordEpisode(cand, dist, pop) {
         // samples MUST persist: the median is computed from them, and
         // dropping them made median undefined on reload, which silently
         // disabled both ranking and generation close.
-        samples: (c.samples || []).slice(-40),
+        samples: (c.samples || []).slice(-EPISODES_PER),
         median: c.median,
       }));
   }

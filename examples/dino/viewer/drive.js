@@ -278,9 +278,10 @@ function frame() {
       // of 9 while the generation never closed (gen 0 after 63 episodes).
       if ((cand.runs || 0) >= EPISODES_PER) {
         epInCand = 0;
-        // skip any candidate that is already finished
-        do { idx++; } while (idx < pop.length && !pop[idx].ctrl && (pop[idx].runs || 0) >= EPISODES_PER);
-        if (idx >= pop.length || generationComplete(pop)) {
+        // advance to the next candidate that still owes episodes, INCLUDING
+        // controls - they are the baseline that makes a score meaningful.
+        do { idx++; } while (idx < pop.length && (pop[idx].runs || 0) >= EPISODES_PER);
+        if (idx >= pop.length) {
           // generation complete: rank, keep elites, breed the next
           const { best, bestCtrl } = closeGeneration(pop);
           const S = currentState();
@@ -399,7 +400,12 @@ $("run").onclick = () => {
     // frames owed = real elapsed time x rate, at 60fps. Clamped so a long
     // throttled gap cannot produce a thousand-frame burst that looks like a
     // freeze followed by a teleport.
-    const owed = Math.min(240, Math.max(1, Math.round((elapsed / (1000 / 60)) * rate)));
+    // rate 0 == MAX: unpaced, CPU-bound. Anything else is wall-clock paced
+    // so 1x really is real time.
+    const owed =
+      rate === 0
+        ? 4000
+        : Math.min(240, Math.max(1, Math.round((elapsed / (1000 / 60)) * rate)));
     for (let i = 0; i < owed; i++) frame();
   };
   const rafPump = () => {

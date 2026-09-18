@@ -71,6 +71,15 @@ tr.ctrl td{color:var(--warn)}
     <button id="run" class="primary">Run</button>
     <button id="stop" disabled>Stop</button>
     <button id="reset">Reset</button>
+    <label style="color:var(--dim);font-size:10px;display:flex;gap:4px;align-items:center">
+      speed <select id="rate">
+        <option value="1">1x real</option>
+        <option value="2">2x</option>
+        <option value="4">4x</option>
+        <option value="12" selected>12x</option>
+        <option value="24">24x turbo</option>
+      </select>
+    </label>
     
   </div>
 </header>
@@ -132,6 +141,6 @@ tr.ctrl td{color:var(--warn)}
      stepping advances nothing). -->
 <script src="clock.js?p=6"></script>
 <script src="game.js?p=6"></script>
-<script type="module" src="drive.js?p=11"></script>
+<script type="module" src="drive.js?p=14"></script>
 </body>
 </html>

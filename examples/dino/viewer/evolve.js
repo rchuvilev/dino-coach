@@ -29,41 +29,65 @@ const LO_MIN = 15, LO_MAX = 55;   // takeoff must start inside the jump arc
 const HI_MAX = 110;               // beyond this the tRex lands ON the obstacle
 
 function clampGenome(g) {
-  g.lo = Math.min(LO_MAX, Math.max(LO_MIN, g.lo));
-  g.hi = Math.min(HI_MAX, Math.max(g.lo + 10, g.hi));
+  g.loA = Math.min(LO_MAX, Math.max(LO_MIN, g.loA));
+  g.loB = Math.max(-8, Math.min(8, g.loB));
+  g.widthA = Math.min(HI_MAX - LO_MIN, Math.max(10, g.widthA));
+  g.widthB = Math.max(-8, Math.min(8, g.widthB));
   g.duck = Math.min(90, Math.max(5, g.duck));
   return g;
 }
 
 function randomGenome(rnd) {
-  const lo = Math.round(LO_MIN + rnd() * (LO_MAX - LO_MIN));
   return clampGenome({
-    lo,
-    hi: lo + Math.round(20 + rnd() * 60),
+    loA: Math.round(LO_MIN + rnd() * (LO_MAX - LO_MIN)),
+    loB: +((rnd() - 0.5) * 8).toFixed(2),
+    widthA: Math.round(20 + rnd() * 60),
+    widthB: +((rnd() - 0.5) * 8).toFixed(2),
     duck: Math.round(20 + rnd() * 60),
     // rule order: which check wins when several match
     duckFirst: rnd() < 0.5,
   });
 }
 
+/** Resolve the genome at a given speed. This is the whole of option A. */
+export function windowAt(g, speed) {
+  const d = (speed || 6) - 6;
+  let lo = g.loA + g.loB * d;
+  let width = g.widthA + g.widthB * d;
+  lo = Math.min(LO_MAX, Math.max(LO_MIN, lo));
+  width = Math.min(HI_MAX - lo, Math.max(10, width));
+  return { lo, hi: lo + width };
+}
+
 function mutate(g, rnd) {
   const n = { ...g };
-  const pick = Math.floor(rnd() * 4);
+  const pick = Math.floor(rnd() * 5);
   const nudge = () => Math.round((rnd() - 0.5) * 30);
-  if (pick === 0) n.lo = Math.max(0, n.lo + nudge());
-  else if (pick === 1) n.hi = Math.max(n.lo + 10, n.hi + nudge());
-  else if (pick === 2) n.duck = Math.max(5, n.duck + nudge());
-  else n.duckFirst = !n.duckFirst;
+  const slope = () => +((rnd() - 0.5) * 4).toFixed(2);
+  if (pick === 0) n.loA = n.loA + nudge();
+  else if (pick === 1) n.widthA = n.widthA + nudge();
+  else if (pick === 2) n.duck = n.duck + nudge();
+  else if (pick === 3) n.duckFirst = !n.duckFirst;
+  else {
+    // mutate a SLOPE: this is the new axis option A adds
+    if (rnd() < 0.5) n.loB = +(n.loB + slope()).toFixed(2);
+    else n.widthB = +(n.widthB + slope()).toFixed(2);
+  }
   return clampGenome(n);
 }
 
-const key = (g) => `${g.lo}|${g.hi}|${g.duck}|${g.duckFirst ? 1 : 0}`;
-const label = (g) => `${g.lo}..${g.hi} duck<=${g.duck}${g.duckFirst ? " D1st" : ""}`;
+const key = (g) =>
+  `${g.loA}|${g.loB}|${g.widthA}|${g.widthB}|${g.duck}|${g.duckFirst ? 1 : 0}`;
+const label = (g) => {
+  if (g.ctrlLabel) return g.ctrlLabel;
+  const sgn = (v) => (v >= 0 ? `+${v}` : `${v}`);
+  return `lo ${g.loA}${sgn(g.loB)}v · w ${g.widthA}${sgn(g.widthB)}v · d${g.duck}${g.duckFirst ? " D1st" : ""}`;
+};
 
 // fixed controls, always evaluated in the rotation
 const CONTROLS = [
-  { ctrl: "do-nothing", lo: -1, hi: -1, duck: -1, duckFirst: false },
-  { ctrl: "always-jump", lo: 0, hi: 99998, duck: -1, duckFirst: false },
+  { ctrl: "do-nothing", never: true, duck: -1, duckFirst: false, ctrlLabel: "do-nothing" },
+  { ctrl: "always-jump", always: true, duck: -1, duckFirst: false, ctrlLabel: "always-jump" },
 ];
 
 // ---- rng ----------------------------------------------------------------

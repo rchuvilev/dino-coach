@@ -15,6 +15,7 @@ import {
   recordEpisode,
   resetAll,
   seedPopulation,
+  windowAt,
 } from "./evolve.js";
 
 const CLOCK = window.__CLOCK;
@@ -80,7 +81,13 @@ function act(a) {
 function decide(s, g) {
   const has = s.gap < 99999;
   const canDuck = g.duck > 0 && has && s.high && s.gap <= g.duck;
-  const canJump = g.lo >= 0 && has && !s.high && s.gap >= g.lo && s.gap <= g.hi && !s.airborne;
+  // controls keep their fixed behaviour
+  if (g.never) return { action: "run", rule: 2 };
+  if (g.always) return { action: "jump", rule: 0 };
+  // OPTION A: the window is resolved from the CURRENT speed, so one genome
+  // expresses a different takeoff distance early and late in the run.
+  const w = windowAt(g, s.speed);
+  const canJump = has && !s.high && s.gap >= w.lo && s.gap <= w.hi && !s.airborne;
   if (g.duckFirst) {
     if (canDuck) return { action: "duck", rule: 1 };
     if (canJump) return { action: "jump", rule: 0 };
@@ -111,13 +118,14 @@ function candName(c) {
 
 function renderRules(fired, s, g) {
   const has = s && s.gap < 99999;
+  const w = g.never || g.always ? { lo: -1, hi: -1 } : windowAt(g, s ? s.speed : 6);
   const rows = [
-    { when: `gap ${g.lo}..${g.hi} & !airborne`, then: "jump" },
+    { when: `gap ${Math.round(w.lo)}..${Math.round(w.hi)} @spd${s ? s.speed.toFixed(1) : "?"}`, then: "jump" },
     { when: `high & gap<=${g.duck}`, then: "duck" },
     { when: "always", then: "run" },
   ];
   const matched = [
-    has && !s.high && s.gap >= g.lo && s.gap <= g.hi && !s.airborne,
+    has && !s.high && s.gap >= w.lo && s.gap <= w.hi && !s.airborne,
     has && s.high && g.duck > 0 && s.gap <= g.duck,
     true,
   ];
@@ -208,10 +216,11 @@ function overlay(s, g) {
   const scale = cr.width / r.canvas.width;
   const top = cr.top - wr.top;
   // takeoff window of the ACTIVE genome
-  if (g && g.lo >= 0 && g.hi < 99998) {
-    const x0 = cr.left - wr.left + (r.tRex.xPos + 44 + g.lo) * scale;
+  if (g && !g.never && !g.always) {
+    const w = windowAt(g, s.speed);
+    const x0 = cr.left - wr.left + (r.tRex.xPos + 44 + w.lo) * scale;
     ctx.fillStyle = "rgba(61,220,132,.18)";
-    ctx.fillRect(x0, top, (g.hi - g.lo) * scale, cr.height);
+    ctx.fillRect(x0, top, (w.hi - w.lo) * scale, cr.height);
   }
   if (s.gap < 99999) {
     const x = cr.left - wr.left + (r.tRex.xPos + 44 + s.gap) * scale;
@@ -340,13 +349,26 @@ $("run").onclick = () => {
   // distance stuck at 4795 and one frame queued but never stepped.
   let lastSeen = -1;
   let stalls = 0;
+  const rateEl = $("rate");
+  let lastPump = performance.now();
   const pump = () => {
     if (!running) return;
-    for (let i = 0; i < 24; i++) frame();
+    const rate = rateEl ? Number(rateEl.value) : 12;
+    const now = performance.now();
+    const elapsed = now - lastPump;
+    lastPump = now;
+    // frames owed = real elapsed time x rate, at 60fps. Clamped so a long
+    // throttled gap cannot produce a thousand-frame burst that looks like a
+    // freeze followed by a teleport.
+    const owed = Math.min(240, Math.max(1, Math.round((elapsed / (1000 / 60)) * rate)));
+    for (let i = 0; i < owed; i++) frame();
   };
   const rafPump = () => {
     if (!running) return;
-    pump();
+    // Only pump from rAF when running faster than real time. At 1x the
+    // setInterval tick alone gives ~60 game frames/sec; adding rAF would
+    // double it and stop being "real speed".
+    if (!rateEl || Number(rateEl.value) > 2) pump();
     rafId = window.requestAnimationFrame(rafPump);
   };
   loop = setInterval(() => {

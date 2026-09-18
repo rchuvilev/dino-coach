@@ -177,9 +177,11 @@ S.lastOpened = Date.now();
 save(S);
 
 const POP = 6; // evaluated per generation, plus 2 controls
-// cv measured at 0.32 for a fixed genome, so a 3-6 episode mean carries a
-// standard error of 13-18% - larger than the differences being selected on.
-const EPISODES_PER = 9;
+// cv measured at 0.32 for a fixed genome, so a 3-episode mean carries a
+// standard error too large to select on. 5 gives a usable median while
+// keeping a generation (5 x 6 = 30 episodes) observable: at 9 episodes per
+// candidate a generation took many minutes and gen stayed 0.
+const EPISODES_PER = 5;
 const ELITE = 3;
 
 function seedPopulation() {
@@ -187,7 +189,16 @@ function seedPopulation() {
   // resume a generation that was interrupted mid-way
   if (S.inProgress && S.inProgress.length) {
     for (const c of S.inProgress) {
-      out.push({ g: c.g, runs: c.runs || 0, total: c.total || 0, best: c.best || 0, mean: c.mean || 0, elite: true });
+      out.push({
+        g: c.g,
+        runs: c.runs || 0,
+        total: c.total || 0,
+        best: c.best || 0,
+        mean: c.mean || 0,
+        samples: c.samples || [],
+        median: c.median,
+        elite: true,
+      });
     }
     S.inProgress = null;
     while (out.length < POP) {
@@ -248,7 +259,18 @@ export function recordEpisode(cand, dist, pop) {
   if (pop) {
     S.inProgress = pop
       .filter((c) => !c.ctrl)
-      .map((c) => ({ g: c.g, runs: c.runs, total: c.total, best: c.best, mean: c.mean }));
+      .map((c) => ({
+        g: c.g,
+        runs: c.runs,
+        total: c.total,
+        best: c.best,
+        mean: c.mean,
+        // samples MUST persist: the median is computed from them, and
+        // dropping them made median undefined on reload, which silently
+        // disabled both ranking and generation close.
+        samples: (c.samples || []).slice(-40),
+        median: c.median,
+      }));
   }
   save(S);
 }
@@ -257,6 +279,11 @@ export function recordEpisode(cand, dist, pop) {
  * Close a generation: rank by LIVE mean, keep elites, record history.
  * Controls are ranked alongside but never become parents.
  */
+/** True when every non-control candidate has completed its episode budget. */
+export function generationComplete(pop) {
+  return pop.filter((c) => !c.ctrl).every((c) => (c.runs || 0) >= EPISODES_PER);
+}
+
 export function closeGeneration(pop) {
   // MEDIAN, not mean: the score distribution has a long upper tail (12 runs
   // of one genome: 6340..18777), so a mean rewards luck. The median moves

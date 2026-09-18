@@ -14,6 +14,7 @@ import {
   label,
   recordEpisode,
   resetAll,
+  generationComplete,
   seedPopulation,
   windowAt,
 } from "./evolve.js";
@@ -235,11 +236,28 @@ function overlay(s, g) {
 }
 
 /** One frame: decide, act, advance the real game by one frame. */
+let epFrames = 0;
+const EP_FRAME_CAP = 9000;  // ~150s of game time; beyond this the candidate
+                            // is clearly strong and further frames add no
+                            // ranking information, only wall-clock delay.
+
 function frame() {
   if (!running) return;
   const cand = pop[idx];
   const s = read();
   if (!s) return;
+
+  // treat a capped run as a completed episode rather than letting one
+  // immortal policy stall the whole generation
+  if (!s.crashed && ++epFrames > EP_FRAME_CAP) {
+    const dist = Math.max(0, s.distance - epStart);
+    recordEpisode(cand, dist, pop);
+    log(`${candName(cand)} -> ${dist} (capped)`);
+    tableDirty = true;
+    epFrames = 0;
+    restartEpisode();
+    return;
+  }
 
   if (s.crashed) {
     if (!sawCrash) {
@@ -250,10 +268,14 @@ function frame() {
       log(`${candName(cand)} -> ${dist}`);
       tableDirty = true;
 
-      if (epInCand >= EPISODES_PER) {
+      // Drive on cand.runs, which PERSISTS, not on epInCand which resets on
+      // reload - that mismatch let candidates reach 28 runs against a budget
+      // of 9 while the generation never closed (gen 0 after 63 episodes).
+      if ((cand.runs || 0) >= EPISODES_PER) {
         epInCand = 0;
-        idx++;
-        if (idx >= pop.length) {
+        // skip any candidate that is already finished
+        do { idx++; } while (idx < pop.length && !pop[idx].ctrl && (pop[idx].runs || 0) >= EPISODES_PER);
+        if (idx >= pop.length || generationComplete(pop)) {
           // generation complete: rank, keep elites, breed the next
           const { best, bestCtrl } = closeGeneration(pop);
           const S = currentState();
@@ -268,6 +290,7 @@ function frame() {
         }
       }
     }
+    epFrames = 0;
     restartEpisode();
     return;
   }

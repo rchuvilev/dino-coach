@@ -647,7 +647,12 @@ function frame() {
     }
   }
   // record the takeoff context so a later crash can be attributed to it
-  if (d.action === "jump" || d.action === "jumpLow" || d.action === "jumpHigh") {
+  if (
+    (d.action === "jump" || d.action === "jumpLow" || d.action === "jumpHigh") &&
+    s.gap < 9000   // reject the no-obstacle sentinel: a jump at nothing
+                   // carries no timing information and produced fail@99999
+                   // with a -99961 "correction"
+  ) {
     tel.lastDecision = captureSituation(s, d.action, cand.g);
     tel.lastDecision.frame = tel.frames;
     // keep the fields ctxKey needs

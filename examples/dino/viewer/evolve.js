@@ -617,6 +617,9 @@ export function learnedOffsets(tel) {
     const mo = med(e.okGap);
     const mf = med(e.failGap);
     if (mo === null || mf === null) continue;
+    // reject sentinels and impossible gaps - a takeoff beyond the screen
+    // cannot be a real observation
+    if (Math.abs(mo) > 500 || Math.abs(mf) > 500) continue;
     // positive = successful takeoffs happened at a LARGER gap (earlier)
     const delta = mo - mf;
     if (Math.abs(delta) < 3) continue;   // below measurement resolution

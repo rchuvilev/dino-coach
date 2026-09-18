@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ai-mentat-blueprint · live</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>ai-mentat-blueprint</h1>
+  <div class="ctl">
+    <button id="run" class="primary">Run</button>
+    <button id="stop">Stop</button>
+    <button id="step">Step</button>
+    <select id="policy"></select>
+    <label>speed <input id="speed" type="range" min="0" max="60" value="16"></label>
+  </div>
+</header>
+
+<!-- ROW 1: the target + live meters -->
+<section class="row1">
+  <div class="panel main">
+    <div class="phead">TARGET <span id="status" class="tag">idle</span></div>
+    <canvas id="screen" width="200" height="60"></canvas>
+    <div class="stats">
+      <span>tick <b id="tick">0</b></span>
+      <span>distance <b id="dist">0</b></span>
+      <span>action <b id="act">—</b></span>
+    </div>
+  </div>
+
+  <aside class="panel meters">
+    <div class="phead">PERCEPTION <span class="tag dim">from pixels</span></div>
+    <div class="meter"><label>gap</label><div class="bar"><i id="m-gap"></i></div><b id="v-gap">—</b></div>
+    <div class="meter"><label>player y</label><div class="bar"><i id="m-y"></i></div><b id="v-y">0</b></div>
+    <div class="flags">
+      <span id="f-high" class="flag">high</span>
+      <span id="f-air" class="flag">airborne</span>
+    </div>
+    <div class="phead" style="margin-top:14px">CONDITIONS</div>
+    <ul id="conds" class="conds"></ul>
+  </aside>
+</section>
+
+<!-- ROW 2: the active strategy, with the firing rule highlighted -->
+<section class="panel strategy">
+  <div class="phead">STRATEGY <span id="pname" class="tag dim">—</span></div>
+  <ol id="rules" class="rules"></ol>
+</section>
+
+<!-- ROW 3: evolution state across runs -->
+<section class="panel evo">
+  <div class="phead">EVOLUTION <span id="evoinfo" class="tag dim">—</span></div>
+  <div class="evowrap">
+    <canvas id="chart" width="600" height="120"></canvas>
+    <table id="pop"></table>
+  </div>
+</section>
+
+<script src="state.js"></script>
+<script>window.__AUTORUN=1;</script>
+<script type="module" src="bundle.js"></script>
+</body>
+</html>

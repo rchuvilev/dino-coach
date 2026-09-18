@@ -177,7 +177,9 @@ S.lastOpened = Date.now();
 save(S);
 
 const POP = 6; // evaluated per generation, plus 2 controls
-const EPISODES_PER = 3; // episodes averaged per candidate - one run is luck
+// cv measured at 0.32 for a fixed genome, so a 3-6 episode mean carries a
+// standard error of 13-18% - larger than the differences being selected on.
+const EPISODES_PER = 9;
 const ELITE = 3;
 
 function seedPopulation() {
@@ -226,9 +228,18 @@ export function recordEpisode(cand, dist, pop) {
   cand.total += dist;
   cand.best = Math.max(cand.best, dist);
   cand.mean = Math.round(cand.total / cand.runs);
+  // keep the distribution: the mean is dragged by a long upper tail
+  cand.samples = (cand.samples || []).concat(dist);
+  const sorted = [...cand.samples].sort((a, b) => a - b);
+  cand.median = sorted[Math.floor(sorted.length / 2)];
   S.episodes++;
   if (!cand.ctrl && dist > S.bestEver) {
-    S.bestEver = dist;
+    S.bestEver = dist;          // single-episode record: a luck measure
+  }
+  // bestMedian is the REPRODUCIBLE figure - what this genome typically does.
+  // Only credit it once a candidate has enough episodes to be trustworthy.
+  if (!cand.ctrl && cand.runs >= EPISODES_PER && cand.median > (S.bestMedian || 0)) {
+    S.bestMedian = cand.median;
     S.bestGenome = cand.g;
   }
   // Persist EVERY episode. Saving only at generation close meant a session
@@ -247,14 +258,21 @@ export function recordEpisode(cand, dist, pop) {
  * Controls are ranked alongside but never become parents.
  */
 export function closeGeneration(pop) {
-  const evolved = pop.filter((c) => !c.ctrl).sort((a, b) => b.mean - a.mean);
+  // MEDIAN, not mean: the score distribution has a long upper tail (12 runs
+  // of one genome: 6340..18777), so a mean rewards luck. The median moves
+  // only when a genome is genuinely better more than half the time.
+  const evolved = pop
+    .filter((c) => !c.ctrl)
+    .sort((a, b) => (b.median || b.mean) - (a.median || a.mean));
   const controls = pop.filter((c) => c.ctrl);
-  const bestCtrl = Math.max(0, ...controls.map((c) => c.mean));
+  const bestCtrl = Math.max(0, ...controls.map((c) => c.median || c.mean));
   S.generation++;
-  S.population = evolved.slice(0, ELITE).map((c) => ({ g: c.g, mean: c.mean, best: c.best }));
+  S.population = evolved
+    .slice(0, ELITE)
+    .map((c) => ({ g: c.g, mean: c.mean, median: c.median, best: c.best }));
   S.history.push({
     gen: S.generation,
-    best: evolved[0] ? evolved[0].mean : 0,
+    best: evolved[0] ? evolved[0].median || evolved[0].mean : 0,
     control: bestCtrl,
     episodes: S.episodes,
   });

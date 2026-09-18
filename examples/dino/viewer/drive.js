@@ -146,20 +146,20 @@ function renderTable() {
   const S = currentState();
   const t = $("tbl");
   t.innerHTML =
-    "<tr><th>candidate</th><th class='n'>runs</th><th class='n'>mean</th><th class='n'>best</th></tr>";
+    "<tr><th>candidate</th><th class='n'>runs</th><th class='n'>median</th><th class='n'>best</th></tr>";
   const evolved = pop.filter((c) => !c.ctrl);
-  const top = Math.max(0, ...evolved.map((c) => c.mean));
+  const top = Math.max(0, ...evolved.map((c) => c.median || 0));
   pop.forEach((c) => {
     const tr = document.createElement("tr");
     if (c.ctrl) tr.className = "ctrl";
-    else if (c.mean && c.mean === top) tr.className = "best";
+    else if (c.median && c.median === top) tr.className = "best";
     tr.innerHTML =
       `<td>${candName(c)}${c.elite ? " ★" : ""}</td><td class="n">${c.runs}</td>` +
-      `<td class="n">${c.mean || "—"}</td><td class="n">${c.best || "—"}</td>`;
+      `<td class="n">${c.median || "—"}</td><td class="n">${c.best || "—"}</td>`;
     t.appendChild(tr);
   });
   $("evoinfo").textContent =
-    `session ${S.sessions} · gen ${S.generation} · ep ${S.episodes} · best ever ${S.bestEver}`;
+    `s${S.sessions} · gen ${S.generation} · ep ${S.episodes} · typical ${S.bestMedian || 0} · luckiest ${S.bestEver}`;
 }
 
 function drawChart() {

@@ -222,13 +222,19 @@ function decide(s, g) {
   // of 35 jumps, which is what caused missed windows for the next obstacle.
   const lateFrac = g.late === undefined ? 1 : g.late;
   const effHi = w.lo + (w.hi - w.lo) * Math.max(0.15, Math.min(1, lateFrac));
-  const canJump = has && !s.high && s.gap >= w.lo && s.gap <= effHi && !s.airborne;
+  // TTC window when the genome has one, else the legacy pixel window. Both
+  // are evolvable; zero ttcLo disables it so the GA can fall back.
+  const useTtc = (g.ttcLo || 0) > 0;
+  const canJump = useTtc
+    ? ttc < 9999 && !s.high && ttc >= g.ttcLo && ttc <= g.ttcHi && !s.airborne
+    : has && !s.high && s.gap >= w.lo && s.gap <= effHi && !s.airborne;
   // PANIC: the window was missed (usually because the dino was airborne
   // through it) and the obstacle is now close. Measured: 12 of 14 deaths
   // were "grounded at impact, never jumped" for exactly this reason.
   const panicGap = g.panic || 0;
-  const canPanic =
-    panicGap > 0 && has && !s.high && !s.airborne && s.gap > 0 && s.gap <= panicGap;
+  const canPanic = useTtc
+    ? (g.ttcPanic || 0) > 0 && ttc < 9999 && !s.high && !s.airborne && ttc > 0 && ttc <= g.ttcPanic
+    : panicGap > 0 && has && !s.high && !s.airborne && s.gap > 0 && s.gap <= panicGap;
   if (g.duckFirst) {
     if (canDuck) return { action: "duck", rule: 1 };
     if (canJump) return { action: "jump", rule: 0 };

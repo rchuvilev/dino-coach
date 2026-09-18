@@ -42,6 +42,9 @@ function clampGenome(g) {
   g.arcLow = Math.min(11, Math.max(5, g.arcLow === undefined ? 8 : g.arcLow));
   g.arcHigh = Math.min(17, Math.max(9, g.arcHigh === undefined ? 12 : g.arcHigh));
   g.arcSwitch = Math.min(180, Math.max(30, g.arcSwitch === undefined ? 90 : g.arcSwitch));
+  g.ttcLo = Math.min(12, Math.max(2, g.ttcLo === undefined ? 6 : g.ttcLo));
+  g.ttcHi = Math.min(20, Math.max(g.ttcLo + 2, g.ttcHi === undefined ? 13 : g.ttcHi));
+  g.ttcPanic = Math.min(6, Math.max(0, g.ttcPanic === undefined ? 3 : g.ttcPanic));
   if (!g.ctxAdj) g.ctxAdj = {};
   return g;
 }
@@ -82,6 +85,12 @@ function randomGenome(rnd) {
     // gap at which to ABORT a jump with fastdrop. 0 = never. The action
     // itself is an engine capability; this only says when to reach for it.
     dropAt: Math.round(rnd() * 60),
+    // TIME-TO-COLLISION window, in frames. Measured optimum around 6..13
+    // (median 1670 vs 602 for the pixel-gap baseline), but the range is
+    // wide so the GA can move it rather than inherit my hand-picked value.
+    ttcLo: 0,   // OFF by default: integration freezes the loop, see note
+    ttcHi: +(9 + rnd() * 9).toFixed(1),
+    ttcPanic: +(1 + rnd() * 4).toFixed(1),
     // JUMP ARC genes. Measured: velocity 8 gives a 57px/28-frame arc,
     // velocity 12 gives 126px/42 frames. Low recovers sooner (fixes the
     // "missed" class), high covers more ground (fixes "wide_early").
@@ -143,7 +152,7 @@ function mutate(g, rnd) {
   const boost = (typeof S !== "undefined" && S && S.mutBoost) || 1;
   const heavy = rnd() < 0.15;
   const scale = (heavy ? 3.5 : 1) * boost;
-  const pick = Math.floor(rnd() * 13);
+  const pick = Math.floor(rnd() * 16);
   const nudge = () => Math.round((rnd() - 0.5) * 30 * scale);
   const slope = () => +((rnd() - 0.5) * 4 * scale).toFixed(2);
   if (pick === 0) n.loA = n.loA + nudge();
@@ -168,6 +177,12 @@ function mutate(g, rnd) {
     n.arcHigh = +Math.max(9, Math.min(17, (n.arcHigh || 12) + (rnd() - 0.5) * 4 * scale)).toFixed(1);
   } else if (pick === 12) {
     n.arcSwitch = Math.max(30, Math.min(180, (n.arcSwitch || 90) + Math.round((rnd() - 0.5) * 50 * scale)));
+  } else if (pick === 13) {
+    n.ttcLo = +Math.max(2, Math.min(12, (n.ttcLo || 6) + (rnd() - 0.5) * 3 * scale)).toFixed(1);
+  } else if (pick === 14) {
+    n.ttcHi = +Math.max(4, Math.min(20, (n.ttcHi || 13) + (rnd() - 0.5) * 4 * scale)).toFixed(1);
+  } else if (pick === 15) {
+    n.ttcPanic = +Math.max(0, Math.min(6, (n.ttcPanic || 3) + (rnd() - 0.5) * 2 * scale)).toFixed(1);
   } else {
     // mutate ONE BAND's offset: the axis option B adds
     n.bands = (n.bands || BANDS.map(() => ({ lo: 0, w: 0 }))).map((b) => ({ ...b }));

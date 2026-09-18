@@ -304,6 +304,22 @@ function renderTable() {
   const total = Object.values(cz).reduce((a, b) => a + b, 0) || 1;
   const topCauses = Object.entries(cz).sort((a, b) => b[1] - a[1]).slice(0, 4)
     .map(([k, v]) => `${k} ${Math.round(100 * v / total)}%`).join(" · ");
+  // per-situation knowledge: BOTH the winning and the losing timing
+  const kEl = $("knowledge");
+  if (kEl) {
+    const K = St.knowledge || {};
+    const med = (a) => (a && a.length ? [...a].sort((x, y) => x - y)[Math.floor(a.length / 2)] : null);
+    const rows = Object.entries(K)
+      .sort((a, b) => (b[1].ok + b[1].fail) - (a[1].ok + a[1].fail))
+      .slice(0, 5)
+      .map(([k, e]) => {
+        const mo = med(e.okGap), mf = med(e.failGap);
+        const rate = e.ok + e.fail ? Math.round((100 * e.ok) / (e.ok + e.fail)) : 0;
+        const fix = mo !== null && mf !== null ? ` fix ${mo - mf > 0 ? "+" : ""}${mo - mf}` : "";
+        return `${k} ${rate}% ok@${mo ?? "-"} fail@${mf ?? "-"}${fix}`;
+      });
+    kEl.textContent = rows.length ? rows.join("  ·  ") : "learning...";
+  }
   const causesEl = $("causes");
   if (causesEl) causesEl.textContent = topCauses || "no deaths recorded yet";
   // POINTS, matching the game's own readout (distance * 0.025). Reporting
@@ -450,7 +466,7 @@ function newTel() {
     wideSeen: 0, wideCleared: 0,
     birdsSeen: 0, birdsCleared: 0,
     missedWindow: 0,      // window open but airborne - cannot act
-    lastGap: 99999, lastWide: false, lastHigh: false, lastAir: false, lastY: 93,
+    lastGap: 99999, lastWide: false, lastHigh: false, lastAir: false, lastY: 93, lastSpeed: 6,
   };
 }
 let bandDist = BANDS.map(() => 0);   // distance travelled per speed band
@@ -489,13 +505,29 @@ function frame() {
       // jumped), bird, or wide-obstacle failure.
       const t = tel || newTel();
       // BLAME: the takeoff that was still in flight when we died
-      if (t.lastDecision) {
+      // BLAME THE RIGHT DECISION.
+      // Airborne at death -> the jump in flight caused it, and its takeoff
+      // gap is the thing to correct. Grounded at death -> no jump is at
+      // fault; the failure is that none was made, so record the window the
+      // agent SHOULD have used rather than charging an unrelated success.
+      const airborneAtDeath = !!(t.lastAir);
+      if (airborneAtDeath && t.lastDecision) {
         const k = ctxKey(t.lastDecision);
-        const e = (t.ctx[k] = t.ctx[k] || { ok: 0, fail: 0, okGap: [], failGap: [] });
+        const e = (t.ctx[k] = t.ctx[k] || { ok: 0, fail: 0, okGap: [], failGap: [], noJump: 0 });
         e.fail++;
         if (e.failGap.length < 30) e.failGap.push(t.lastDecision.takeoffGap);
-        // keep the full situation of the most recent failure for inspection
-        t.lastFailure = t.lastDecision;
+        t.lastFailure = { ...t.lastDecision, kind: "badJump" };
+      } else if (!airborneAtDeath) {
+        // omission: count it separately so it cannot corrupt the timing stats
+        const probe = {
+          wide: !!t.lastWide,
+          speed: t.lastSpeed || 6,
+          next: null,
+        };
+        const k = ctxKey(probe);
+        const e = (t.ctx[k] = t.ctx[k] || { ok: 0, fail: 0, okGap: [], failGap: [], noJump: 0 });
+        e.noJump = (e.noJump || 0) + 1;
+        t.lastFailure = { kind: "noJump", ctx: k, speed: probe.speed, wide: probe.wide };
       }
       let cause;
       if (t.lastHigh) cause = "bird";
@@ -561,6 +593,7 @@ function frame() {
   }
   tel.lastGap = s.gap; tel.lastWide = s.wide; tel.lastHigh = s.high;
   tel.lastAir = s.airborne; tel.lastY = Math.round(s.y === undefined ? 93 : s.y);
+  tel.lastSpeed = s.speed;
 
   // attribute progress to the band that was active while it was earned
   const here = Math.max(0, s.distance - epStart);
@@ -585,6 +618,16 @@ function frame() {
     tel.lastDecision.gap = tel.lastDecision.takeoffGap;
     tel.lastDecision.width = tel.lastDecision.targetWidth;
     tel.lastDecision.next = tel.lastDecision.nextDelta;
+  }
+  // A landed jump is resolved and can no longer be blamed. Without this a
+  // successful takeoff stayed "live" for the rest of the episode and was
+  // charged with a death 38 steps later while the dino was on the ground.
+  if (tel.lastDecision && !s.airborne && tel.frames - tel.lastDecision.frame > 3) {
+    const k = ctxKey(tel.lastDecision);
+    const e = (tel.ctx[k] = tel.ctx[k] || { ok: 0, fail: 0, okGap: [], failGap: [], noJump: 0 });
+    e.ok++;
+    if (e.okGap.length < 30) e.okGap.push(tel.lastDecision.takeoffGap);
+    tel.lastDecision = null;
   }
   // a jump is credited as SUCCESSFUL once its obstacle is behind us
   if (tel.lastDecision && s.gap < -10 && tel.frames - tel.lastDecision.frame > 3) {

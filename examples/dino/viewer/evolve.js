@@ -42,11 +42,19 @@ function clampGenome(g) {
   g.arcLow = Math.min(11, Math.max(5, g.arcLow === undefined ? 8 : g.arcLow));
   g.arcHigh = Math.min(17, Math.max(9, g.arcHigh === undefined ? 12 : g.arcHigh));
   g.arcSwitch = Math.min(180, Math.max(30, g.arcSwitch === undefined ? 90 : g.arcSwitch));
+  if (!g.ctxAdj) g.ctxAdj = {};
   return g;
 }
 
 function randomGenome(rnd) {
+  // Seed from what the session already knows. A fresh genome that starts
+  // with the pooled corrections is not starting from zero knowledge - it
+  // only has to search the axes the knowledge base cannot fix.
+  const seeded = knowledgeOffsets();
+  const ctxAdj = {};
+  for (const [k, v] of Object.entries(seeded)) ctxAdj[k] = v.delta;
   return clampGenome({
+    ctxAdj,
     loA: Math.round(LO_MIN + rnd() * (LO_MAX - LO_MIN)),
     loB: +((rnd() - 0.5) * 8).toFixed(2),
     widthA: Math.round(20 + rnd() * 60),
@@ -453,9 +461,10 @@ export function recordEpisode(cand, dist, pop, bandDist, telemetry) {
     if (telemetry.ctx) {
       t.ctx = t.ctx || {};
       for (const [k, e] of Object.entries(telemetry.ctx)) {
-        const dst = (t.ctx[k] = t.ctx[k] || { ok: 0, fail: 0, okGap: [], failGap: [] });
+        const dst = (t.ctx[k] = t.ctx[k] || { ok: 0, fail: 0, okGap: [], failGap: [], noJump: 0 });
         dst.ok += e.ok || 0;
         dst.fail += e.fail || 0;
+        dst.noJump = (dst.noJump || 0) + (e.noJump || 0);
         if (e.okGap) dst.okGap = dst.okGap.concat(e.okGap).slice(-30);
         if (e.failGap) dst.failGap = dst.failGap.concat(e.failGap).slice(-30);
       }
@@ -469,6 +478,8 @@ export function recordEpisode(cand, dist, pop, bandDist, telemetry) {
     S.causes = S.causes || {};
     S.causes[telemetry.cause] = (S.causes[telemetry.cause] || 0) + 1;
   }
+  // pool this episode's situation outcomes into session knowledge
+  if (telemetry && telemetry.ctx) absorbKnowledge({ ctx: telemetry.ctx });
   if (bandDist) {
     cand.bandTotals = (cand.bandTotals || bandDist.map(() => 0)).map(
       (v, i) => v + (bandDist[i] || 0),
@@ -558,6 +569,33 @@ export function generationComplete(pop) {
  */
 const MIN_SAMPLES = 4;
 
+/**
+ * Merge one candidate's per-situation outcomes into the SESSION knowledge
+ * base. Pooling across all candidates matters: a single genome sees a class
+ * a handful of times, but the population as a whole sees it hundreds of
+ * times, which is the difference between a noisy offset and a usable one.
+ */
+export function absorbKnowledge(tel) {
+  if (!tel || !tel.ctx) return;
+  S.knowledge = S.knowledge || {};
+  for (const [k, e] of Object.entries(tel.ctx)) {
+    const dst = (S.knowledge[k] = S.knowledge[k] || {
+      ok: 0, fail: 0, okGap: [], failGap: [], noJump: 0,
+    });
+    dst.ok += e.ok || 0;
+    dst.fail += e.fail || 0;
+    dst.noJump = (dst.noJump || 0) + (e.noJump || 0);
+    // keep a bounded window so old, obsolete timings age out
+    if (e.okGap) dst.okGap = dst.okGap.concat(e.okGap).slice(-60);
+    if (e.failGap) dst.failGap = dst.failGap.concat(e.failGap).slice(-60);
+  }
+}
+
+/** Offsets derived from the POOLED session knowledge, not one genome. */
+export function knowledgeOffsets() {
+  return learnedOffsets({ ctx: S.knowledge || {} });
+}
+
 export function learnedOffsets(tel) {
   if (!tel || !tel.ctx) return {};
   const med = (a) => {
@@ -569,6 +607,8 @@ export function learnedOffsets(tel) {
   for (const [k, e] of Object.entries(tel.ctx)) {
     if (!e.okGap || !e.failGap) continue;
     if (e.okGap.length < MIN_SAMPLES || e.failGap.length < MIN_SAMPLES) continue;
+    // an offset derived from a handful of failures is noise at cv 0.50
+    if ((e.fail || 0) < MIN_SAMPLES) continue;
     const mo = med(e.okGap);
     const mf = med(e.failGap);
     if (mo === null || mf === null) continue;
@@ -626,15 +666,45 @@ export function closeGeneration(pop) {
   // rediscovering it. This is the step that makes failure analysis change
   // behaviour instead of only changing a score.
   for (const c of evolved.slice(0, ELITE)) {
-    const off = learnedOffsets(c.tel);
-    if (Object.keys(off).length) {
-      c.g = { ...c.g, ctxAdj: { ...(c.g.ctxAdj || {}) } };
-      for (const [k, v] of Object.entries(off)) {
-        const prev = c.g.ctxAdj[k] || 0;
-        // move a fraction of the way, so one generation cannot overcorrect
-        c.g.ctxAdj[k] = Math.max(-30, Math.min(30, Math.round(prev + v.delta * 0.4)));
+    // pooled knowledge first, then this genome's own experience on top -
+    // its own data is more specific to how IT plays, so it wins ties
+    const pooled = knowledgeOffsets();
+    const own = learnedOffsets(c.tel);
+    const off = { ...pooled, ...own };
+    if (!Object.keys(off).length) continue;
+
+    c.g = { ...c.g, ctxAdj: { ...(c.g.ctxAdj || {}) } };
+    const prevRates = c.g.__ctxRate || {};
+    const nowRates = {};
+    const ctx = (c.tel && c.tel.ctx) || {};
+
+    for (const [k, v] of Object.entries(off)) {
+      const e = ctx[k];
+      // observed success rate for this class THIS generation
+      const tried = e ? e.ok + e.fail + (e.noJump || 0) : 0;
+      const rate = tried ? e.ok / tried : null;
+      if (rate !== null) nowRates[k] = +rate.toFixed(3);
+
+      const prev = c.g.ctxAdj[k] || 0;
+      const before = prevRates[k];
+
+      // VERDICT on the offset already in place
+      if (prev !== 0 && before !== undefined && rate !== null) {
+        if (rate < before - 0.02) {
+          // it made this class WORSE - roll back toward zero rather than
+          // pushing further in the same direction
+          c.g.ctxAdj[k] = Math.round(prev * 0.5);
+          continue;
+        }
+        if (Math.abs(rate - before) <= 0.02) {
+          // no measurable effect: hold, do not accumulate drift
+          continue;
+        }
       }
+      // either no offset yet, or the last one helped - advance it
+      c.g.ctxAdj[k] = Math.max(-30, Math.min(30, Math.round(prev + v.delta * 0.4)));
     }
+    c.g.__ctxRate = nowRates;
   }
   S.population = evolved.slice(0, ELITE).map((c) => ({
     g: c.g,

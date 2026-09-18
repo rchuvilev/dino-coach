@@ -56,11 +56,14 @@ function read() {
   const tx = r.tRex.xPos + 44;
   let gap = 99999;
   let high = false;
+  let width = 0;
   for (const o of (r.horizon && r.horizon.obstacles) || []) {
     const d = o.xPos - tx;
     if (d > -30 && d < gap) {
       gap = d;
-      high = o.yPos < 60;
+      // birds sit at yPos < 75 in this build; 60 missed the low-flying ones
+      high = o.yPos < 75;
+      width = o.width || 0;
     }
   }
   return {
@@ -71,6 +74,8 @@ function read() {
     airborne: r.tRex.yPos < (r.tRex.groundYPos || 93) - 4,
     gap,
     high,
+    width,
+    wide: width >= 50,
   };
 }
 
@@ -98,7 +103,16 @@ function decide(s, g) {
   if (g.always) return { action: "jump", rule: 0 };
   // OPTION A: the window is resolved from the CURRENT speed, so one genome
   // expresses a different takeoff distance early and late in the run.
-  const w = windowAt(g, s.speed);
+  let w = windowAt(g, s.speed);
+  // WIDTH-AWARE takeoff. Measured taxonomy over 20 deaths: 16 were "jumped
+  // early, descended onto the obstacle", dominated by w>=70 cacti. The dino
+  // clears 17 frames * speed px while high enough; a w75 needs 119px
+  // including its own body, so at speed 6 it covers only 102 and CANNOT
+  // clear - the response must differ by width, not just by speed.
+  if (s.wide) {
+    const adj = g.wideAdj || 0;
+    w = { lo: Math.max(5, w.lo + adj), hi: Math.max(15, w.hi + adj) };
+  }
   // Latest-safe takeoff: fire in the LOWER part of the window, not on entry.
   // Firing on entry kept the dino airborne 56% of all frames and wasted 22
   // of 35 jumps, which is what caused missed windows for the next obstacle.
@@ -133,6 +147,7 @@ function restartEpisode() {
   const s = read();
   // DELTA baseline: restart() does not zero distanceRan in this build
   epStart = s ? s.distance : 0;
+  tel = newTel();
   lastDist = 0;
   bandDist = BANDS.map(() => 0);
   sawCrash = false;
@@ -183,6 +198,13 @@ function renderTable() {
       `<td class="n">${c.median || "—"}</td><td class="n">${c.best || "—"}</td>`;
     t.appendChild(tr);
   });
+  const St = currentState();
+  const cz = St.causes || {};
+  const total = Object.values(cz).reduce((a, b) => a + b, 0) || 1;
+  const topCauses = Object.entries(cz).sort((a, b) => b[1] - a[1]).slice(0, 4)
+    .map(([k, v]) => `${k} ${Math.round(100 * v / total)}%`).join(" · ");
+  const causesEl = $("causes");
+  if (causesEl) causesEl.textContent = topCauses || "no deaths recorded yet";
   $("evoinfo").textContent =
     `s${S.sessions} · gen ${S.generation} · ep ${S.episodes} · typical ${S.bestMedian || 0} · luckiest ${S.bestEver}`;
 }
@@ -259,7 +281,16 @@ function overlay(s, g) {
   const top = cr.top - wr.top;
   // takeoff window of the ACTIVE genome
   if (g && !g.never && !g.always) {
-    const w = windowAt(g, s.speed);
+    let w = windowAt(g, s.speed);
+  // WIDTH-AWARE takeoff. Measured taxonomy over 20 deaths: 16 were "jumped
+  // early, descended onto the obstacle", dominated by w>=70 cacti. The dino
+  // clears 17 frames * speed px while high enough; a w75 needs 119px
+  // including its own body, so at speed 6 it covers only 102 and CANNOT
+  // clear - the response must differ by width, not just by speed.
+  if (s.wide) {
+    const adj = g.wideAdj || 0;
+    w = { lo: Math.max(5, w.lo + adj), hi: Math.max(15, w.hi + adj) };
+  }
     const x0 = cr.left - wr.left + (r.tRex.xPos + 44 + w.lo) * scale;
     ctx.fillStyle = "rgba(61,220,132,.18)";
     ctx.fillRect(x0, top, (w.hi - w.lo) * scale, cr.height);
@@ -277,6 +308,18 @@ function overlay(s, g) {
 
 /** One frame: decide, act, advance the real game by one frame. */
 let epFrames = 0;
+/** Telemetry accumulated within the current episode. */
+let tel = null;
+function newTel() {
+  return {
+    jumps: 0, ducks: 0, panics: 0,
+    framesAir: 0, frames: 0,
+    wideSeen: 0, wideCleared: 0,
+    birdsSeen: 0, birdsCleared: 0,
+    missedWindow: 0,      // window open but airborne - cannot act
+    lastGap: 99999, lastWide: false, lastHigh: false, lastAir: false, lastY: 93,
+  };
+}
 let bandDist = BANDS.map(() => 0);   // distance travelled per speed band
 let lastDist = 0;
 const EP_FRAME_CAP = 9000;  // ~150s of game time; beyond this the candidate
@@ -293,7 +336,8 @@ function frame() {
   // immortal policy stall the whole generation
   if (!s.crashed && ++epFrames > EP_FRAME_CAP) {
     const dist = Math.max(0, s.distance - epStart);
-    recordEpisode(cand, dist, pop, bandDist);
+    recordEpisode(cand, dist, pop, bandDist, { ...(tel || newTel()), cause: "capped" });
+    tel = newTel();
     bandDist = BANDS.map(() => 0);
     lastDist = 0;
     log(`${candName(cand)} -> ${dist} (capped)`);
@@ -307,7 +351,18 @@ function frame() {
     if (!sawCrash) {
       sawCrash = true;
       const dist = Math.max(0, s.distance - epStart);
-      recordEpisode(cand, dist, pop, bandDist);
+      // CLASSIFY the death from the state at impact. This is the taxonomy:
+      // early (descending onto it), late (ascending into it), missed (never
+      // jumped), bird, or wide-obstacle failure.
+      const t = tel || newTel();
+      let cause;
+      if (t.lastHigh) cause = "bird";
+      else if (!t.lastAir) cause = "missed";
+      else if (t.lastY > 60) cause = "early";
+      else cause = "late";
+      if (t.lastWide && cause !== "bird") cause = "wide_" + cause;
+      recordEpisode(cand, dist, pop, bandDist, { ...t, cause });
+      tel = newTel();
       bandDist = BANDS.map(() => 0);
       lastDist = 0;
       epInCand++;
@@ -349,6 +404,22 @@ function frame() {
     return;
   }
 
+  // ---- telemetry: what the agent SAW and DID, per frame
+  if (!tel) tel = newTel();
+  tel.frames++;
+  if (s.airborne) tel.framesAir++;
+  if (s.gap < 99999 && s.gap > -10) {
+    if (s.wide && !tel.lastWide) tel.wideSeen++;
+    if (s.high && !tel.lastHigh) tel.birdsSeen++;
+  }
+  // an obstacle that moved from ahead to behind was cleared
+  if (tel.lastGap > 0 && s.gap < 0 && s.gap > -30) {
+    if (tel.lastWide) tel.wideCleared++;
+    if (tel.lastHigh) tel.birdsCleared++;
+  }
+  tel.lastGap = s.gap; tel.lastWide = s.wide; tel.lastHigh = s.high;
+  tel.lastAir = s.airborne; tel.lastY = Math.round(s.y === undefined ? 93 : s.y);
+
   // attribute progress to the band that was active while it was earned
   const here = Math.max(0, s.distance - epStart);
   const gained = Math.max(0, here - lastDist);
@@ -356,6 +427,11 @@ function frame() {
   lastDist = here;
 
   const d = decide(s, cand.g);
+  if (d.action === "jump") tel.jumps++;
+  else if (d.action === "duck") tel.ducks++;
+  if (d.panic) tel.panics++;
+  // window was open but the dino was airborne, so it could not act
+  if (s.gap < 99999 && !s.high && s.airborne) tel.missedWindow++;
   act(d.action);
   CLOCK.step();
 
@@ -456,10 +532,14 @@ $("run").onclick = () => {
     // Burst is capped at 4: measured, spacing decisions 8 frames apart costs
     // 3.5x performance (median 4348 vs 15398), while 4 is indistinguishable
     // from 1. Max rate therefore pumps MORE OFTEN rather than more per pump.
+    // frame() = exactly one decide + one clock step, so a large burst keeps
+    // decisions dense (1 per frame) while giving full throughput. The
+    // measured 3.5x loss came from stepping the clock 8x per DECISION, which
+    // is a different thing entirely and cannot happen here.
     const owed =
       rate === 0
-        ? 4
-        : Math.min(4, Math.max(1, Math.round((elapsed / (1000 / 60)) * rate)));
+        ? 3000
+        : Math.min(240, Math.max(1, Math.round((elapsed / (1000 / 60)) * rate)));
     for (let i = 0; i < owed; i++) frame();
   };
   const rafPump = () => {

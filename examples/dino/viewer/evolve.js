@@ -37,6 +37,7 @@ function clampGenome(g) {
   g.duck = Math.min(90, Math.max(5, g.duck));
   g.panic = Math.min(34, Math.max(0, g.panic === undefined ? 0 : g.panic));
   g.late = Math.min(1, Math.max(0.15, g.late === undefined ? 1 : g.late));
+  g.wideAdj = Math.min(35, Math.max(-35, g.wideAdj === undefined ? 0 : g.wideAdj));
   return g;
 }
 
@@ -50,17 +51,22 @@ function randomGenome(rnd) {
     // only appear in runs that survive that long - measured 5 of 10 runs for
     // a strong genome. The duck gene therefore looks like dead code until a
     // policy is good enough to reach them.
-    duck: Math.round(20 + rnd() * 60),
+    duck: Math.round(rnd() * 90),             // wide range, GA decides
     // rule order: which check wins when several match
     duckFirst: rnd() < 0.5,
     // PANIC jump: if the window was missed (typically because the dino was
     // airborne through it) jump anyway below this gap rather than running
     // into the obstacle. 0 disables, so evolution can switch it off.
-    panic: Math.round(rnd() * 25),
+    panic: Math.round(rnd() * 34),            // wide range, GA decides
     // fraction of the window to actually use, measured from its LOWER edge.
     // 1 = old behaviour (fire on entry), 0.3 = wait until the obstacle is
     // close. Firing on entry left the dino airborne 56% of all frames.
-    late: +(0.6 + rnd() * 0.4).toFixed(2),
+    late: +(0.15 + rnd() * 0.85).toFixed(2),  // wide range, GA decides
+    // Takeoff shift for WIDE obstacles (>=50px). Measured: they dominate the
+    // "jumped early, descended onto it" class, and at speed 6 they are not
+    // clearable at all (102px of clearance travel against 119px needed), so
+    // the correct response differs from a narrow cactus.
+    wideAdj: Math.round((rnd() - 0.5) * 70),   // wide range, GA decides
     // start at zero offsets: identical to option A until evolution finds a
     // reason to differentiate a band
     bands: BANDS.map(() => ({ lo: 0, w: 0 })),
@@ -105,7 +111,7 @@ export function windowAt(g, speed) {
 
 function mutate(g, rnd) {
   const n = { ...g };
-  const pick = Math.floor(rnd() * 8);
+  const pick = Math.floor(rnd() * 9);
   const nudge = () => Math.round((rnd() - 0.5) * 30);
   const slope = () => +((rnd() - 0.5) * 4).toFixed(2);
   if (pick === 0) n.loA = n.loA + nudge();
@@ -120,6 +126,8 @@ function mutate(g, rnd) {
     n.panic = Math.max(0, Math.min(34, (n.panic || 0) + Math.round((rnd() - 0.5) * 16)));
   } else if (pick === 7) {
     n.late = +Math.max(0.15, Math.min(1, (n.late === undefined ? 1 : n.late) + (rnd() - 0.5) * 0.4)).toFixed(2);
+  } else if (pick === 8) {
+    n.wideAdj = Math.max(-35, Math.min(35, (n.wideAdj || 0) + Math.round((rnd() - 0.5) * 20)));
   } else {
     // mutate ONE BAND's offset: the axis option B adds
     n.bands = (n.bands || BANDS.map(() => ({ lo: 0, w: 0 }))).map((b) => ({ ...b }));
@@ -371,7 +379,7 @@ export function resetAll() {
 
 export { seedPopulation, mutate, randomGenome, key, label, ELITE, EPISODES_PER, POP, rnd, clampGenome, save };
 
-export function recordEpisode(cand, dist, pop, bandDist) {
+export function recordEpisode(cand, dist, pop, bandDist, telemetry) {
   cand.runs++;
   cand.total += dist;
   cand.best = Math.max(cand.best, dist);
@@ -384,6 +392,27 @@ export function recordEpisode(cand, dist, pop, bandDist) {
   // per-band credit: distance earned WHILE each band was active. This is what
   // makes option B more than extra parameters - a band's offset is judged on
   // the progress it actually produced, not on the episode total.
+  // --- accumulate telemetry so failure CLASSES become measured data rather
+  // than something a human sweeps by hand.
+  if (telemetry) {
+    const t = (cand.tel = cand.tel || {
+      causes: {}, jumps: 0, panics: 0, ducks: 0,
+      framesAir: 0, frames: 0, missedWindow: 0,
+      wideSeen: 0, wideCleared: 0, birdsSeen: 0, birdsCleared: 0,
+    });
+    t.causes[telemetry.cause] = (t.causes[telemetry.cause] || 0) + 1;
+    for (const k of ["jumps","panics","ducks","framesAir","frames","missedWindow",
+                     "wideSeen","wideCleared","birdsSeen","birdsCleared"]) {
+      t[k] += telemetry[k] || 0;
+    }
+    // derived rates - the numbers worth looking at
+    t.pctAir = t.frames ? +(100 * t.framesAir / t.frames).toFixed(0) : 0;
+    t.wideClearRate = t.wideSeen ? +(t.wideCleared / t.wideSeen).toFixed(2) : null;
+    t.birdClearRate = t.birdsSeen ? +(t.birdsCleared / t.birdsSeen).toFixed(2) : null;
+    // GLOBAL rollup, so the UI can show what kills runs overall
+    S.causes = S.causes || {};
+    S.causes[telemetry.cause] = (S.causes[telemetry.cause] || 0) + 1;
+  }
   if (bandDist) {
     cand.bandTotals = (cand.bandTotals || bandDist.map(() => 0)).map(
       (v, i) => v + (bandDist[i] || 0),

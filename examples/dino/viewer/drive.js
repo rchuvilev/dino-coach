@@ -6,6 +6,7 @@
  * stopped. Population persists to localStorage, so a reload continues.
  */
 import { TakeoffKNN, featurize } from "./knn.js";
+import * as Analysis from "./analysis.js";
 import {
   closeGeneration,
   currentState,
@@ -37,6 +38,12 @@ const CLOCK = window.__CLOCK;
  * Three axes measured to matter: obstacle width, speed band, and whether a
  * second obstacle is close behind.
  */
+/** Add the derived time-to-collision, measured 2.8x more predictive than gap. */
+function withTtc(d) {
+  const ttc = d.speed > 0 && Math.abs(d.takeoffGap) < 500 ? d.takeoffGap / d.speed : null;
+  return { ...d, ttc };
+}
+
 function ctxKey(d) {
   const w = d.wide ? "wide" : "narrow";
   const sp = d.speed < 8 ? "slow" : d.speed < 10.5 ? "mid" : "fast";
@@ -146,11 +153,14 @@ function act(a) {
   if (!r) return;
   const ev = (kc, t) => ({ keyCode: kc, type: t, preventDefault() {}, target: {} });
   if (a === "jump" || a === "jumpLow" || a === "jumpHigh") {
+    const wasJumping = !!(r.tRex && r.tRex.jumping);
     r.onKeyDown(ev(38, "keydown"));
     r.onKeyUp(ev(38, "keyup"));
     // Shape the arc AFTER startJump - setting jumpVelocity before it is
     // overwritten by the game's own initialisation.
-    if (r.tRex && r.tRex.jumping) {
+    // ONLY on the frame the jump begins. Re-applying the velocity while
+    // already airborne re-boosts the dino every frame and it never lands.
+    if (r.tRex && r.tRex.jumping && !wasJumping) {
       if (a === "jumpLow") r.tRex.jumpVelocity = -(lastArc.low);
       else if (a === "jumpHigh") r.tRex.jumpVelocity = -(lastArc.high);
     }
@@ -339,6 +349,20 @@ function renderTable() {
       });
     kEl.textContent = rows.length ? rows.join("  ·  ") : "learning...";
   }
+  // THREE-WAY DIAGNOSIS: state x reason x prop, the actionable form
+  const dEl = $("diagnosis");
+  if (dEl) {
+    const lines = [];
+    for (const st of Analysis.states(analysis)) {
+      for (const d of Analysis.diagnose(analysis, st).slice(0, 2)) {
+        lines.push(
+          `${d.state} · ${d.reason}: ${d.prop} ok@${d.okMedian} vs fail@${d.failMedian} ` +
+            `(${d.delta > 0 ? "+" : ""}${d.delta}, n=${d.nFail}/${d.nOk})`,
+        );
+      }
+    }
+    dEl.textContent = lines.length ? lines.slice(0, 6).join("\n") : "gathering...";
+  }
   const causesEl = $("causes");
   if (causesEl) causesEl.textContent = topCauses || "no deaths recorded yet";
   // POINTS, matching the game's own readout (distance * 0.025). Reporting
@@ -488,6 +512,13 @@ function overlay(s, g) {
  */
 let knn = new TakeoffKNN(600);
 
+/**
+ * STATE x FAIL-REASON x PROP table. The three dimensions existed separately;
+ * this is where they meet, which is what turns "38% early" into "in
+ * wide/slow, early deaths jump at gap 72 while survivals jump at 41".
+ */
+let analysis = {};
+
 let epFrames = 0;
 /** Telemetry accumulated within the current episode. */
 let tel = null;
@@ -551,7 +582,16 @@ function frame() {
       // fault; the failure is that none was made, so record the window the
       // agent SHOULD have used rather than charging an unrelated success.
       const airborneAtDeath = !!(t.lastAir);
+      // cause is computed just below; capture it first so the joined table
+      // gets state x reason x props in one place
+      let deathCause;
+      if (t.lastHigh) deathCause = "bird";
+      else if (!t.lastAir) deathCause = "missed";
+      else if (t.lastY > 60) deathCause = "early";
+      else deathCause = "late";
+
       if (airborneAtDeath && t.lastDecision) {
+        Analysis.record(analysis, ctxKey(t.lastDecision), deathCause, withTtc(t.lastDecision));
         const k = ctxKey(t.lastDecision);
         const e = (t.ctx[k] = t.ctx[k] || { ok: 0, fail: 0, okGap: [], failGap: [], noJump: 0 });
         e.fail++;
@@ -597,6 +637,7 @@ function frame() {
           // generation complete: rank, keep elites, breed the next
           const { best, bestCtrl } = closeGeneration(pop);
           saveKnn();
+          saveAnalysis();
           const S = currentState();
           log(
             `gen ${S.generation}: best ${best ? best.mean : 0} vs control ${bestCtrl}` +
@@ -675,6 +716,7 @@ function frame() {
     e.ok++;
     if (e.okGap.length < 30) e.okGap.push(tel.lastDecision.takeoffGap);
     knn.add(featurize(tel.lastDecision), true, tel.lastDecision.takeoffGap);
+    Analysis.record(analysis, ctxKey(tel.lastDecision), "ok", withTtc(tel.lastDecision));
     tel.lastDecision = null;
   }
   // a jump is credited as SUCCESSFUL once its obstacle is behind us
@@ -685,6 +727,7 @@ function frame() {
     // remember WHICH takeoff gap worked here - this is what tuning needs
     if (e.okGap.length < 30) e.okGap.push(tel.lastDecision.takeoffGap);
     knn.add(featurize(tel.lastDecision), true, tel.lastDecision.takeoffGap);
+    Analysis.record(analysis, ctxKey(tel.lastDecision), "ok", withTtc(tel.lastDecision));
     tel.lastDecision = null;
   }
   if (d.action === "jump") tel.jumps++;
@@ -881,6 +924,18 @@ function refreshAll() {
 }
 
 /** Persist the learned model. Bounded by its own cap, so this stays small. */
+function saveAnalysis() {
+  try { localStorage.setItem("dino-analysis-v1", JSON.stringify(analysis)); }
+  catch { /* storage may be full */ }
+}
+function loadAnalysis() {
+  try {
+    const raw = localStorage.getItem("dino-analysis-v1");
+    if (raw) analysis = JSON.parse(raw);
+  } catch { analysis = {}; }
+}
+loadAnalysis();
+
 function saveKnn() {
   try { localStorage.setItem("dino-knn-v1", JSON.stringify(knn.toJSON())); }
   catch { /* storage may be full or unavailable */ }
@@ -987,7 +1042,11 @@ if (resetBtn) {
     }
     // the learned model is part of the session's knowledge and must go too
     knn.clear();
-    try { localStorage.removeItem("dino-knn-v1"); } catch { /* ignore */ }
+    analysis = {};
+    try {
+      localStorage.removeItem("dino-knn-v1");
+      localStorage.removeItem("dino-analysis-v1");
+    } catch { /* ignore */ }
     resetAll();
     pop = seedPopulation();
     idx = 0;

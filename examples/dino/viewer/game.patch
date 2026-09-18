@@ -47,7 +47,23 @@
      }
  
      function GameOverPanel(canvas, textImgPos, restartImgPos, dimensions) {
-@@ -1494,6 +1510,17 @@
+@@ -1481,6 +1497,15 @@
+                     this.draw(i, parseInt(this.digits[i]))
+                 }
+             }
++            // HARNESS PATCH: promote the record as soon as the live score
++            // exceeds it, rather than waiting for gameOver(). Without this X
++            // sits frozen while Y runs past it for the whole episode.
++            if (typeof this.liveHigh !== 'number') this.liveHigh = 0;
++            if (distance > this.liveHigh) {
++                this.liveHigh = distance;
++                var liveStr = (this.defaultString + distance).substr(-this.maxScoreUnits);
++                this.highScore = ['10', '11', ''].concat(liveStr.split(''));
++            }
+             this.drawHighScore();
+             return playSound
+         },
+@@ -1494,8 +1519,20 @@
          },
          setHighScore: function(distance) {
              distance = this.getActualDistance(distance);
@@ -63,5 +79,9 @@
 +                this.defaultString += '0';
 +            }
              var highScoreStr = (this.defaultString + distance).substr(-this.maxScoreUnits);
-             this.highScore = ['10', '11', ''].concat(highScoreStr.split(''))
+-            this.highScore = ['10', '11', ''].concat(highScoreStr.split(''))
++            this.highScore = ['10', '11', ''].concat(highScoreStr.split(''));
++            this.liveHigh = distance;
          },
+         reset: function() {
+             this.update(0);

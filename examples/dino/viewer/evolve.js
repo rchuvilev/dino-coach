@@ -54,6 +54,13 @@ export function windowAt(g, speed) {
   const d = (speed || 6) - 6;
   let lo = g.loA + g.loB * d;
   let width = g.widthA + g.widthB * d;
+  // A NaN here means a genome of the wrong shape reached the policy, which
+  // reads as "never jump" and is indistinguishable from a bad strategy.
+  // Fail loudly-ish: fall back to a known-viable window instead.
+  if (!Number.isFinite(lo) || !Number.isFinite(width)) {
+    lo = 30;
+    width = 30;
+  }
   lo = Math.min(LO_MAX, Math.max(LO_MIN, lo));
   width = Math.min(HI_MAX - lo, Math.max(10, width));
   return { lo, hi: lo + width };
@@ -112,10 +119,43 @@ function blank() {
   };
 }
 
+/** Upgrade a genome written by an older schema. */
+function migrateGenome(g) {
+  if (!g || typeof g !== "object") return null;
+  if (g.ctrl || g.never || g.always) return g;
+  if (g.loA !== undefined) return g;              // already current
+  if (g.lo !== undefined && g.hi !== undefined) { // v0: constant window
+    return clampGenome({
+      loA: g.lo,
+      loB: 0,
+      widthA: Math.max(10, g.hi - g.lo),
+      widthB: 0,
+      duck: g.duck === undefined ? 40 : g.duck,
+      duckFirst: !!g.duckFirst,
+    });
+  }
+  return null;  // unrecognised: drop rather than feed NaN into the policy
+}
+
+function migrate(S) {
+  if (!S || typeof S !== "object") return blank();
+  const fix = (arr) =>
+    (arr || [])
+      .map((c) => {
+        const g = migrateGenome(c.g || c);
+        return g ? { ...c, g } : null;
+      })
+      .filter(Boolean);
+  S.population = fix(S.population);
+  S.inProgress = S.inProgress ? fix(S.inProgress) : null;
+  if (S.bestGenome) S.bestGenome = migrateGenome(S.bestGenome);
+  return S;
+}
+
 function load() {
   try {
     const raw = localStorage.getItem(STORE_KEY);
-    if (raw) return JSON.parse(raw);
+    if (raw) return migrate(JSON.parse(raw));
   } catch {
     /* storage may be unavailable on some schemes */
   }

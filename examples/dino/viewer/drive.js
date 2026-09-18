@@ -832,6 +832,8 @@ $("run").onclick = () => {
   let stalls = 0;
   const rateEl = $("rate");
   let lastPump = performance.now();
+  // forward reference so the painter can drive the watchdog too
+  let watchdogRef = () => {};
   const pump = () => {
     if (!running) return;
     const rate = rateEl ? Number(rateEl.value) : 12;
@@ -874,6 +876,7 @@ $("run").onclick = () => {
     rafId = realRAF(rafPump);
   };
   painter = setInterval(() => {
+    watchdogRef();
     paint();
     if (tableDirty) {
       tableDirty = false;
@@ -897,8 +900,32 @@ $("run").onclick = () => {
     setTimeout(fastTick, 0);
   };
   setTimeout(fastTick, 0);
+  // WATCHDOG: if nothing advanced since the last check, pump directly rather
+  // than waiting for a timer that may be throttled. This is what keeps a run
+  // alive when the browser starves setTimeout/rAF.
+  let lastOdo = -1;
+  let idle = 0;
+  const watchdog = () => {
+    if (!running) return;
+    const s = read();
+    const odo = s ? s.distance : -1;
+    if (odo === lastOdo) {
+      idle++;
+      // escalate: one missed check is normal jitter, several means starved
+      if (idle >= 2) {
+        for (let i = 0; i < 300; i++) frame();
+        idle = 0;
+      }
+    } else {
+      idle = 0;
+    }
+    lastOdo = odo;
+  };
+  watchdogRef = watchdog;
+
   loop = setInterval(() => {
     pump();
+    watchdog();
     // watchdog: if the odometer has not moved between ticks, the game lost
     // its queued frame - re-prime it rather than silently freezing.
     const s = read();

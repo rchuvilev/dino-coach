@@ -423,7 +423,12 @@ export function importState(text) {
 }
 
 export function resetAll() {
-  S = blank();
+  // Mutate IN PLACE. Reassigning S left other closures holding the old
+  // object, which was then written back by the next autosave - measured,
+  // reset left generation 7386 and 125675 episodes intact.
+  const fresh = blank();
+  for (const k of Object.keys(S)) delete S[k];
+  Object.assign(S, fresh);
   save(S);
 }
 

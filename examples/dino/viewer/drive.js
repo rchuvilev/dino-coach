@@ -5,6 +5,7 @@
  * episodes, rank by live mean, keep elites, breed, repeat — forever, until
  * stopped. Population persists to localStorage, so a reload continues.
  */
+import { TakeoffKNN, featurize } from "./knn.js";
 import {
   closeGeneration,
   currentState,
@@ -192,6 +193,18 @@ function decide(s, g) {
     };
     const adj = g.ctxAdj[ctxKey(probe)];
     if (adj) w = { lo: Math.max(5, w.lo + adj), hi: Math.max(15, w.hi + adj) };
+  }
+  // KNN correction from the CONTINUOUS neighbourhood, layered on the
+  // bucketed ctxAdj. It only speaks when the local neighbourhood holds both
+  // outcomes and the failure rate is material, so it stays silent where
+  // there is nothing to fix.
+  const sug = knn.suggest(
+    featurize({ gap: s.gap, speed: s.speed, width: s.width,
+                next: s.gap2 < 99999 ? s.gap2 - s.gap : null }),
+  );
+  if (sug) {
+    const shift = Math.round(sug.delta * 0.5);
+    w = { lo: Math.max(5, w.lo + shift), hi: Math.max(15, w.hi + shift) };
   }
   g.__wLo = Math.round(w.lo);
   g.__wHi = Math.round(w.hi);
@@ -421,6 +434,18 @@ function overlay(s, g) {
     const adj = g.ctxAdj[ctxKey(probe)];
     if (adj) w = { lo: Math.max(5, w.lo + adj), hi: Math.max(15, w.hi + adj) };
   }
+  // KNN correction from the CONTINUOUS neighbourhood, layered on the
+  // bucketed ctxAdj. It only speaks when the local neighbourhood holds both
+  // outcomes and the failure rate is material, so it stays silent where
+  // there is nothing to fix.
+  const sug = knn.suggest(
+    featurize({ gap: s.gap, speed: s.speed, width: s.width,
+                next: s.gap2 < 99999 ? s.gap2 - s.gap : null }),
+  );
+  if (sug) {
+    const shift = Math.round(sug.delta * 0.5);
+    w = { lo: Math.max(5, w.lo + shift), hi: Math.max(15, w.hi + shift) };
+  }
   g.__wLo = Math.round(w.lo);
   g.__wHi = Math.round(w.hi);
   // WIDTH-AWARE takeoff. Measured taxonomy over 20 deaths: 16 were "jumped
@@ -448,6 +473,15 @@ function overlay(s, g) {
 }
 
 /** One frame: decide, act, advance the real game by one frame. */
+/**
+ * Session KNN over takeoff outcomes. Trains incrementally - every resolved
+ * jump is one example, no retraining step - and persists across reloads.
+ * Replaces hard situation buckets, which split a continuum into classes that
+ * shared no information (speed 7.9 vs 8.1 were unrelated; 6.0 vs 7.9 were
+ * identical).
+ */
+let knn = new TakeoffKNN(600);
+
 let epFrames = 0;
 /** Telemetry accumulated within the current episode. */
 let tel = null;
@@ -516,6 +550,7 @@ function frame() {
         const e = (t.ctx[k] = t.ctx[k] || { ok: 0, fail: 0, okGap: [], failGap: [], noJump: 0 });
         e.fail++;
         if (e.failGap.length < 30) e.failGap.push(t.lastDecision.takeoffGap);
+        knn.add(featurize(t.lastDecision), false, t.lastDecision.takeoffGap);
         t.lastFailure = { ...t.lastDecision, kind: "badJump" };
       } else if (!airborneAtDeath) {
         // omission: count it separately so it cannot corrupt the timing stats
@@ -555,6 +590,7 @@ function frame() {
         if (idx >= pop.length) {
           // generation complete: rank, keep elites, breed the next
           const { best, bestCtrl } = closeGeneration(pop);
+          saveKnn();
           const S = currentState();
           log(
             `gen ${S.generation}: best ${best ? best.mean : 0} vs control ${bestCtrl}` +
@@ -627,6 +663,7 @@ function frame() {
     const e = (tel.ctx[k] = tel.ctx[k] || { ok: 0, fail: 0, okGap: [], failGap: [], noJump: 0 });
     e.ok++;
     if (e.okGap.length < 30) e.okGap.push(tel.lastDecision.takeoffGap);
+    knn.add(featurize(tel.lastDecision), true, tel.lastDecision.takeoffGap);
     tel.lastDecision = null;
   }
   // a jump is credited as SUCCESSFUL once its obstacle is behind us
@@ -636,6 +673,7 @@ function frame() {
     e.ok++;
     // remember WHICH takeoff gap worked here - this is what tuning needs
     if (e.okGap.length < 30) e.okGap.push(tel.lastDecision.takeoffGap);
+    knn.add(featurize(tel.lastDecision), true, tel.lastDecision.takeoffGap);
     tel.lastDecision = null;
   }
   if (d.action === "jump") tel.jumps++;
@@ -831,6 +869,19 @@ function refreshAll() {
   drawChart();
 }
 
+/** Persist the learned model. Bounded by its own cap, so this stays small. */
+function saveKnn() {
+  try { localStorage.setItem("dino-knn-v1", JSON.stringify(knn.toJSON())); }
+  catch { /* storage may be full or unavailable */ }
+}
+function loadKnn() {
+  try {
+    const raw = localStorage.getItem("dino-knn-v1");
+    if (raw) knn = TakeoffKNN.fromJSON(JSON.parse(raw));
+  } catch { /* corrupt state must not block startup */ }
+}
+loadKnn();
+
 const saveBtn = $("save");
 if (saveBtn) {
   saveBtn.onclick = () => {
@@ -914,6 +965,18 @@ if (resetBtn) {
         rr.distanceMeter.setHighScore(0);
       }
     }
+    // stop first: a running loop re-saves its in-memory state over the wipe
+    if (running) {
+      running = false;
+      clearInterval(loop);
+      clearInterval(painter);
+      if (rafId) window.cancelAnimationFrame(rafId);
+      $("run").disabled = false;
+      $("stop").disabled = true;
+    }
+    // the learned model is part of the session's knowledge and must go too
+    knn.clear();
+    try { localStorage.removeItem("dino-knn-v1"); } catch { /* ignore */ }
     resetAll();
     pop = seedPopulation();
     idx = 0;

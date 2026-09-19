@@ -6,6 +6,8 @@
  * stopped. Population persists to localStorage, so a reload continues.
  */
 import { TakeoffKNN, featurize } from "./knn.js";
+import { JumpModel } from "./mlp.js";
+import { LogStore } from "./logstore.js";
 import * as Analysis from "./analysis.js";
 import {
   closeGeneration,
@@ -100,13 +102,19 @@ let idx = 0;
 let epInCand = 0;
 let epStart = 0;
 let sawCrash = false;
-let logLines = [];
+/**
+ * Persistent structured log. Replaces a 5-line textContent buffer that
+ * vanished on reload and was invisible to Export - which made it impossible
+ * to see afterwards WHAT the model weights had been corrected on.
+ */
+let logs = new LogStore();
 
-const log = (s) => {
-  logLines.unshift(s);
-  logLines = logLines.slice(0, 5);
-  $("log").textContent = logLines.join("\n");
-};
+function log(msg, kind = "system", data) {
+  logs.add(kind, msg, data);
+  const el = $("log");
+  if (el) el.textContent = logs.render(6);
+  saveLogs();
+}
 
 function read() {
   const r = R();
@@ -459,6 +467,7 @@ function renderTable() {
   $("evoinfo").textContent =
     `s${S.sessions} · gen ${S.generation} · ep ${S.episodes} · ` +
     `typical ${pts(S.bestMedian)}pts · best ${pts(S.bestEver)}pts` +
+    ` · model ${mlp.samplesTrained}` +
     (stale > 0 ? ` · stale ${stale}` : "") + boost;
 }
 
@@ -596,6 +605,14 @@ function overlay(s, g) {
 let knn = new TakeoffKNN(600);
 
 /**
+ * Parametric model with TRAINABLE WEIGHTS, corrected after every outcome.
+ * KNN memorises; this one is actually trained. Weight updates are deferred
+ * to episode boundaries because trainOnBatch measured 4.99 ms against a
+ * 16.7 ms frame budget.
+ */
+let mlp = new JumpModel();
+
+/**
  * STATE x FAIL-REASON x PROP table. The three dimensions existed separately;
  * this is where they meet, which is what turns "38% early" into "in
  * wide/slow, early deaths jump at gap 72 while survivals jump at 41".
@@ -680,6 +697,7 @@ function frame() {
         e.fail++;
         if (e.failGap.length < 30) e.failGap.push(t.lastDecision.takeoffGap);
         knn.add(featurize(t.lastDecision), false, t.lastDecision.takeoffGap);
+        mlp.observe(featurize(t.lastDecision), false);
         t.lastFailure = { ...t.lastDecision, kind: "badJump" };
       } else if (!airborneAtDeath) {
         // omission: count it separately so it cannot corrupt the timing stats
@@ -696,12 +714,10 @@ function frame() {
         // the model saw only successes (measured 104 ok / 0 fail, pOk 1.0)
         // and could never fire a correction.
         if (Number.isFinite(t.lastGap) && Math.abs(t.lastGap) < 500) {
-          knn.add(
-            featurize({ gap: t.lastGap, speed: t.lastSpeed || 6,
-                        width: t.lastWidth || 0, next: null }),
-            false,
-            Math.round(t.lastGap),
-          );
+          const omission = featurize({ gap: t.lastGap, speed: t.lastSpeed || 6,
+                                       width: t.lastWidth || 0, next: null });
+          knn.add(omission, false, Math.round(t.lastGap));
+          mlp.observe(omission, false);
         }
         t.lastFailure = { kind: "noJump", ctx: k, speed: probe.speed, wide: probe.wide };
       }
@@ -716,11 +732,27 @@ function frame() {
       bandDist = BANDS.map(() => 0);
       lastDist = 0;
       epInCand++;
-      log(`${candName(cand)} -> ${Math.round(dist * 0.025)}pts`);
+      log(
+        `ep${(currentState().episodes || 0) + 1} ${Math.round(dist * 0.025)}pts · ${cause} · ${candName(cand)}`,
+        "episode",
+        { pts: Math.round(dist * 0.025), cause, genome: candName(cand) },
+      );
       // persist the learned model with the episode, not only at generation
       // close - otherwise a short session looks like nothing was learned
       saveKnn();
       saveAnalysis();
+      // correct the weights with everything this episode observed
+      mlp.flush().then((n) => {
+        if (!n) return;
+        saveMlp();
+        const loss = mlp.lastLoss;
+        log(
+          `trained on ${n} outcomes · ${mlp.samplesTrained} total` +
+            (loss != null ? ` · loss ${Number(loss).toFixed(3)}` : ""),
+          "train",
+          { batch: n, total: mlp.samplesTrained, loss },
+        );
+      });
       tableDirty = true;
 
       // Drive on cand.runs, which PERSISTS, not on epInCand which resets on
@@ -735,6 +767,10 @@ function frame() {
         if (idx >= pop.length) {
           // generation complete: rank, keep elites, breed the next
           const { best, bestCtrl } = closeGeneration(pop);
+          log(
+            `gen ${currentState().generation} closed · best ${Math.round((best && best.median || 0) * 0.025)}pts · control ${Math.round(bestCtrl * 0.025)}pts`,
+            "generation",
+          );
           saveKnn();
           saveAnalysis();
           const S = currentState();
@@ -816,6 +852,7 @@ function frame() {
     e.ok++;
     if (e.okGap.length < 30) e.okGap.push(tel.lastDecision.takeoffGap);
     knn.add(featurize(tel.lastDecision), true, tel.lastDecision.takeoffGap);
+    mlp.observe(featurize(tel.lastDecision), true);
     Analysis.record(analysis, ctxKey(tel.lastDecision), "ok", withTtc(tel.lastDecision));
     tel.lastDecision = null;
   }
@@ -827,6 +864,7 @@ function frame() {
     // remember WHICH takeoff gap worked here - this is what tuning needs
     if (e.okGap.length < 30) e.okGap.push(tel.lastDecision.takeoffGap);
     knn.add(featurize(tel.lastDecision), true, tel.lastDecision.takeoffGap);
+    mlp.observe(featurize(tel.lastDecision), true);
     Analysis.record(analysis, ctxKey(tel.lastDecision), "ok", withTtc(tel.lastDecision));
     tel.lastDecision = null;
   }
@@ -907,7 +945,7 @@ $("run").onclick = () => {
   running = true;
   // hold the screen on for the duration of the run
   acquireWakeLock().then((mode) => {
-    if (mode !== "none") log(`screen kept awake (${mode})`);
+    if (mode !== "none") log(`screen kept awake (${mode})`, "system");
   });
   jumpLatched = false;
   sawCrash = false;
@@ -965,7 +1003,7 @@ $("run").onclick = () => {
       releaseWakeLock();
       $("status").textContent = "error";
       $("status").className = "tag dead";
-      log(`ERROR: ${String((e && e.message) || e).slice(0, 80)}`);
+      log(`ERROR: ${String((e && e.message) || e).slice(0, 80)}`, "error");
       $("run").disabled = false;
       $("stop").disabled = true;
     }
@@ -1090,6 +1128,36 @@ function loadAnalysis() {
 }
 loadAnalysis();
 
+let logSaveTimer = null;
+function saveLogs() {
+  // debounced: the log is written on every entry and episodes are frequent
+  if (logSaveTimer) return;
+  logSaveTimer = setTimeout(() => {
+    logSaveTimer = null;
+    try { localStorage.setItem("dino-logs-v1", JSON.stringify(logs.toJSON())); }
+    catch { /* storage may be full */ }
+  }, 500);
+}
+function loadLogs() {
+  try {
+    const raw = localStorage.getItem("dino-logs-v1");
+    if (raw) logs = LogStore.fromJSON(JSON.parse(raw));
+  } catch { /* corrupt log must not block startup */ }
+}
+loadLogs();
+
+function saveMlp() {
+  try { localStorage.setItem("dino-mlp-v1", JSON.stringify(mlp.toJSON())); }
+  catch { /* storage may be full */ }
+}
+function loadMlp() {
+  try {
+    const raw = localStorage.getItem("dino-mlp-v1");
+    if (raw) mlp.loadFrom(JSON.parse(raw));
+  } catch { /* corrupt weights must not block startup */ }
+}
+loadMlp();
+
 function saveKnn() {
   try { localStorage.setItem("dino-knn-v1", JSON.stringify(knn.toJSON())); }
   catch { /* storage may be full or unavailable */ }
@@ -1131,7 +1199,20 @@ const exportBtn = $("export");
 if (exportBtn) {
   exportBtn.onclick = () => {
     const S = currentState();
-    const blob = new Blob([exportState()], { type: "application/json" });
+    // FULL session snapshot: evolution state, the trained weights, the KNN
+    // examples, the joined analysis, and the log. Exporting only the
+    // evolution state would drop the model and the record of what it was
+    // corrected on.
+    const bundle = {
+      format: "dino-session-v2",
+      exportedAt: Date.now(),
+      evolve: JSON.parse(exportState()),
+      mlp: mlp.toJSON(),
+      knn: knn.toJSON(),
+      analysis,
+      logs: logs.toJSON(),
+    };
+    const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = `dino-evolve-gen${S.generation}-ep${S.episodes}.json`;
@@ -1141,7 +1222,10 @@ if (exportBtn) {
       URL.revokeObjectURL(a.href);
       a.remove();
     }, 1000);
-    log(`exported gen ${S.generation}, ep ${S.episodes}`);
+    log(
+      `exported gen ${S.generation} · ep ${S.episodes} · ${mlp.samplesTrained} trained · ${logs.entries.length} log lines`,
+      "system",
+    );
   };
 }
 
@@ -1153,9 +1237,35 @@ if (importBtn && fileEl) {
     const f = fileEl.files && fileEl.files[0];
     if (!f) return;
     try {
-      const S2 = importState(await f.text());
+      const text = await f.text();
+      const parsed = JSON.parse(text);
+      let S2;
+      if (parsed && parsed.format === "dino-session-v2") {
+        // full snapshot
+        S2 = importState(JSON.stringify(parsed.evolve));
+        if (parsed.knn) knn = TakeoffKNN.fromJSON(parsed.knn);
+        if (parsed.analysis) analysis = parsed.analysis;
+        if (parsed.logs) logs = LogStore.fromJSON(parsed.logs);
+        if (parsed.mlp) {
+          mlp.dispose();
+          mlp = new JumpModel();
+          await mlp.loadFrom(parsed.mlp);
+        }
+        saveKnn();
+        saveAnalysis();
+        saveMlp();
+        saveLogs();
+      } else {
+        // older export: evolution state only, still accepted
+        S2 = importState(text);
+      }
       refreshAll();
-      log(`imported: gen ${S2.generation}, ep ${S2.episodes}`);
+      const el = $("log");
+      if (el) el.textContent = logs.render(6);
+      log(
+        `imported gen ${S2.generation} · ep ${S2.episodes} · ${mlp.samplesTrained} trained`,
+        "system",
+      );
     } catch (e) {
       log(`import FAILED: ${String(e.message || e).slice(0, 60)}`);
     }
@@ -1207,10 +1317,23 @@ if (resetBtn) {
     epInCand = 0;
     // the learned model is part of the session's knowledge and must go too
     knn.clear();
+    mlp.dispose();
+    mlp = new JumpModel();
     analysis = {};
+    // cancel the pending debounced write FIRST, or it fires after the
+    // removeItem below and resurrects the log
+    if (logSaveTimer) {
+      clearTimeout(logSaveTimer);
+      logSaveTimer = null;
+    }
+    logs.clear();
+    const le = $("log");
+    if (le) le.textContent = "";
     try {
       localStorage.removeItem("dino-knn-v1");
       localStorage.removeItem("dino-analysis-v1");
+      localStorage.removeItem("dino-mlp-v1");
+      localStorage.removeItem("dino-logs-v1");
     } catch { /* ignore */ }
     resetAll();
     pop = seedPopulation();

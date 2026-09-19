@@ -21,16 +21,7 @@
  * decision path.
  */
 
-const SCALE = { gap: 60, speed: 6, width: 50, next: 120 };
-
-export function featurize(s) {
-  return [
-    (s.gap ?? 0) / SCALE.gap,
-    (s.speed ?? 6) / SCALE.speed,
-    (s.width ?? 0) / SCALE.width,
-    (s.next === null || s.next === undefined ? 999 : s.next) / SCALE.next,
-  ];
-}
+import { FEATURE_COUNT } from "./features.js";
 
 const tfg = () => (typeof window !== "undefined" ? window.tf : undefined);
 
@@ -67,7 +58,10 @@ export class JumpModel {
     this.building = true;
     await ensureBackend();
     const m = tf.sequential();
-    m.add(tf.layers.dense({ units: 8, activation: "relu", inputShape: [4] }));
+    // Wider first layer: the input went from 4 to 12 features, and 8 units
+    // cannot represent interactions between world, decision and physics.
+    m.add(tf.layers.dense({ units: 16, activation: "relu", inputShape: [FEATURE_COUNT] }));
+    m.add(tf.layers.dense({ units: 8, activation: "relu" }));
     m.add(tf.layers.dense({ units: 1, activation: "sigmoid" }));
     // lr 0.2 measured best for online single-sample updates (0.99 vs 0.80
     // at 0.05); high for batch training, correct for one-sample-at-a-time.
@@ -157,6 +151,14 @@ export class JumpModel {
 
   async loadFrom(o) {
     if (!o || !o.weights) return false;
+    // Reject weights from a different input width. The first tensor is the
+    // input kernel with shape [features, units]; a 4-feature model cannot
+    // populate a 12-feature net, and setWeights would throw inside the catch
+    // below leaving an untrained model that reports as loaded.
+    const first = o.weights[0];
+    if (!first || !first.shape || first.shape[0] !== FEATURE_COUNT) {
+      return false;
+    }
     const tf = tfg();
     if (!tf) return false;
     if (!(await this.build())) return false;

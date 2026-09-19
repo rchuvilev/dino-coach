@@ -5,7 +5,8 @@
  * episodes, rank by live mean, keep elites, breed, repeat — forever, until
  * stopped. Population persists to localStorage, so a reload continues.
  */
-import { TakeoffKNN, featurize } from "./knn.js";
+import { TakeoffKNN, featurize as knnFeaturize } from "./knn.js";
+import { featurize } from "./features.js";
 import { JumpModel } from "./mlp.js";
 import { LogStore } from "./logstore.js";
 import * as Analysis from "./analysis.js";
@@ -41,6 +42,19 @@ const CLOCK = window.__CLOCK;
  * second obstacle is close behind.
  */
 /** Add the derived time-to-collision, measured 2.8x more predictive than gap. */
+/** Map a captured takeoff situation onto the model's feature input. */
+function mlpFeatFrom(d) {
+  return {
+    gap: d.takeoffGap,
+    speed: d.speed,
+    width: d.targetWidth,
+    next: d.nextDelta,
+    high: !!d.high,
+    wide: !!d.wide,
+    arcVel: d.arcVel ?? 10,
+  };
+}
+
 function withTtc(d) {
   const ttc = d.speed > 0 && Math.abs(d.takeoffGap) < 500 ? d.takeoffGap / d.speed : null;
   return { ...d, ttc };
@@ -291,8 +305,8 @@ function decide(s, g) {
   // outcomes and the failure rate is material, so it stays silent where
   // there is nothing to fix.
   const sug = knn.suggest(
-    featurize({ gap: s.gap, speed: s.speed, width: s.width,
-                next: s.gap2 < 99999 ? s.gap2 - s.gap : null }),
+    knnFeaturize({ gap: s.gap, speed: s.speed, width: s.width,
+                   next: s.gap2 < 99999 ? s.gap2 - s.gap : null }),
   );
   if (sug) {
     const shift = Math.round(sug.delta * 0.5);
@@ -322,9 +336,14 @@ function decide(s, g) {
   const ttc = s.gap < 9000 && s.speed > 0 ? s.gap / s.speed : 9999;
   // MODEL IN THE LOOP: P(this jump clears), from the trained weights.
   // Null until the model has seen enough to be worth consulting.
+  // Includes the DECISION (which arc) and the obstacle TYPE, not just the
+  // world state - without them the same situation jumped two different ways
+  // produced identical features with opposite labels.
   const mlpFeat = {
     gap: s.gap, speed: s.speed, width: s.width,
     next: s.gap2 < 9000 ? s.gap2 - s.gap : null,
+    high: s.high, wide: s.wide,
+    arcVel: s.wide ? (g.arcHigh ?? 12) : (g.arcLow ?? 8),
   };
   const pClear = mlp.predictSync(featurize(mlpFeat));
 
@@ -582,8 +601,8 @@ function overlay(s, g) {
   // outcomes and the failure rate is material, so it stays silent where
   // there is nothing to fix.
   const sug = knn.suggest(
-    featurize({ gap: s.gap, speed: s.speed, width: s.width,
-                next: s.gap2 < 99999 ? s.gap2 - s.gap : null }),
+    knnFeaturize({ gap: s.gap, speed: s.speed, width: s.width,
+                   next: s.gap2 < 99999 ? s.gap2 - s.gap : null }),
   );
   if (sug) {
     const shift = Math.round(sug.delta * 0.5);
@@ -717,8 +736,8 @@ function frame() {
         const e = (t.ctx[k] = t.ctx[k] || { ok: 0, fail: 0, okGap: [], failGap: [], noJump: 0 });
         e.fail++;
         if (e.failGap.length < 30) e.failGap.push(t.lastDecision.takeoffGap);
-        knn.add(featurize(t.lastDecision), false, t.lastDecision.takeoffGap);
-        mlp.observe(featurize(t.lastDecision), false);
+        knn.add(knnFeaturize(t.lastDecision), false, t.lastDecision.takeoffGap);
+        mlp.observe(featurize(mlpFeatFrom(t.lastDecision)), false);
         t.lastFailure = { ...t.lastDecision, kind: "badJump" };
       } else if (!airborneAtDeath) {
         // omission: count it separately so it cannot corrupt the timing stats
@@ -735,10 +754,16 @@ function frame() {
         // the model saw only successes (measured 104 ok / 0 fail, pOk 1.0)
         // and could never fire a correction.
         if (Number.isFinite(t.lastGap) && Math.abs(t.lastGap) < 500) {
-          const omission = featurize({ gap: t.lastGap, speed: t.lastSpeed || 6,
-                                       width: t.lastWidth || 0, next: null });
+          const omission = knnFeaturize({ gap: t.lastGap, speed: t.lastSpeed || 6,
+                                          width: t.lastWidth || 0, next: null });
           knn.add(omission, false, Math.round(t.lastGap));
-          mlp.observe(omission, false);
+          mlp.observe(
+            featurize({ gap: t.lastGap, speed: t.lastSpeed || 6,
+                        width: t.lastWidth || 0, next: null,
+                        high: t.lastHigh, wide: (t.lastWidth || 0) >= 50,
+                        arcVel: 0 }),   // arcVel 0 = no jump was made
+            false,
+          );
         }
         t.lastFailure = { kind: "noJump", ctx: k, speed: probe.speed, wide: probe.wide };
       }
@@ -875,8 +900,8 @@ function frame() {
     const e = (tel.ctx[k] = tel.ctx[k] || { ok: 0, fail: 0, okGap: [], failGap: [], noJump: 0 });
     e.ok++;
     if (e.okGap.length < 30) e.okGap.push(tel.lastDecision.takeoffGap);
-    knn.add(featurize(tel.lastDecision), true, tel.lastDecision.takeoffGap);
-    mlp.observe(featurize(tel.lastDecision), true);
+    knn.add(knnFeaturize(tel.lastDecision), true, tel.lastDecision.takeoffGap);
+    mlp.observe(featurize(mlpFeatFrom(tel.lastDecision)), true);
     Analysis.record(analysis, ctxKey(tel.lastDecision), "ok", withTtc(tel.lastDecision));
     tel.lastDecision = null;
   }
@@ -887,8 +912,8 @@ function frame() {
     e.ok++;
     // remember WHICH takeoff gap worked here - this is what tuning needs
     if (e.okGap.length < 30) e.okGap.push(tel.lastDecision.takeoffGap);
-    knn.add(featurize(tel.lastDecision), true, tel.lastDecision.takeoffGap);
-    mlp.observe(featurize(tel.lastDecision), true);
+    knn.add(knnFeaturize(tel.lastDecision), true, tel.lastDecision.takeoffGap);
+    mlp.observe(featurize(mlpFeatFrom(tel.lastDecision)), true);
     Analysis.record(analysis, ctxKey(tel.lastDecision), "ok", withTtc(tel.lastDecision));
     tel.lastDecision = null;
   }

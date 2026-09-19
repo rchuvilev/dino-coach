@@ -320,6 +320,14 @@ function decide(s, g) {
   // Previously declared inside withTtc() and referenced from this scope,
   // which threw "ttc is not defined" on the first decision.
   const ttc = s.gap < 9000 && s.speed > 0 ? s.gap / s.speed : 9999;
+  // MODEL IN THE LOOP: P(this jump clears), from the trained weights.
+  // Null until the model has seen enough to be worth consulting.
+  const mlpFeat = {
+    gap: s.gap, speed: s.speed, width: s.width,
+    next: s.gap2 < 9000 ? s.gap2 - s.gap : null,
+  };
+  const pClear = mlp.predictSync(featurize(mlpFeat));
+
   const useTtc = (g.ttcLo || 0) > 0;
   const canJump = useTtc
     ? ttc < 9999 && !s.high && ttc >= g.ttcLo && ttc <= g.ttcHi && !s.airborne
@@ -331,11 +339,24 @@ function decide(s, g) {
   const canPanic = useTtc
     ? (g.ttcPanic || 0) > 0 && ttc < 9999 && !s.high && !s.airborne && ttc > 0 && ttc <= g.ttcPanic
     : panicGap > 0 && has && !s.high && !s.airborne && s.gap > 0 && s.gap <= panicGap;
+  // VETO: the rules want to jump but the model says this one fails.
+  // Threshold is deliberately strict - only override on real confidence.
+  const vetoed =
+    pClear !== null && canJump && pClear < (g.mlpVeto === undefined ? 0.25 : g.mlpVeto);
+  // RESCUE: the rules are NOT jumping, but the model says a jump would
+  // clear and the obstacle is close enough that doing nothing kills us.
+  const rescue =
+    pClear !== null && !canJump && !canDuck && !s.airborne &&
+    s.gap > 0 && s.gap < 60 &&
+    pClear > (g.mlpRescue === undefined ? 0.8 : g.mlpRescue);
+
+  if (rescue) return { action: "jump", rule: 0, byModel: true };
+
   if (g.duckFirst) {
     if (canDuck) return { action: "duck", rule: 1 };
-    if (canJump) return { action: "jump", rule: 0 };
+    if (canJump && !vetoed) return { action: "jump", rule: 0 };
   } else {
-    if (canJump) {
+    if (canJump && !vetoed) {
       // wide obstacle -> high arc to cover ground; narrow with another
       // obstacle close behind -> low arc to land sooner and stay ready
       const needHigh = s.wide;
@@ -742,7 +763,10 @@ function frame() {
       saveKnn();
       saveAnalysis();
       // correct the weights with everything this episode observed
-      mlp.flush().then((n) => {
+      // Flush NOW, before the next episode starts, so the next run really
+      // is executed with corrected weights. Batched deferral meant a run
+      // could begin on the same weights that had just failed.
+      mlp.flush(64).then((n) => {
         if (!n) return;
         saveMlp();
         const loss = mlp.lastLoss;

@@ -45,6 +45,8 @@ function clampGenome(g) {
   g.ttcLo = Math.min(12, Math.max(2, g.ttcLo === undefined ? 6 : g.ttcLo));
   g.ttcHi = Math.min(20, Math.max(g.ttcLo + 2, g.ttcHi === undefined ? 13 : g.ttcHi));
   g.ttcPanic = Math.min(6, Math.max(0, g.ttcPanic === undefined ? 3 : g.ttcPanic));
+  g.mlpVeto = Math.min(0.45, Math.max(0, g.mlpVeto === undefined ? 0.25 : g.mlpVeto));
+  g.mlpRescue = Math.min(0.99, Math.max(0.55, g.mlpRescue === undefined ? 0.8 : g.mlpRescue));
   if (!g.ctxAdj) g.ctxAdj = {};
   return g;
 }
@@ -91,6 +93,10 @@ function randomGenome(rnd) {
     ttcLo: 0,   // OFF by default: integration freezes the loop, see note
     ttcHi: +(9 + rnd() * 9).toFixed(1),
     ttcPanic: +(1 + rnd() * 4).toFixed(1),
+    // how much to trust the trained model. veto below this P(clear),
+    // rescue above the other. The GA decides whether the model helps.
+    mlpVeto: +(0.1 + rnd() * 0.3).toFixed(2),
+    mlpRescue: +(0.7 + rnd() * 0.25).toFixed(2),
     // JUMP ARC genes. Measured: velocity 8 gives a 57px/28-frame arc,
     // velocity 12 gives 126px/42 frames. Low recovers sooner (fixes the
     // "missed" class), high covers more ground (fixes "wide_early").
@@ -188,7 +194,7 @@ function mutate(g, rnd) {
   const boost = (typeof S !== "undefined" && S && S.mutBoost) || 1;
   const heavy = rnd() < 0.15;
   const scale = (heavy ? 3.5 : 1) * boost;
-  const pick = Math.floor(rnd() * 16);
+  const pick = Math.floor(rnd() * 18);
   const nudge = () => Math.round((rnd() - 0.5) * 30 * scale);
   const slope = () => +((rnd() - 0.5) * 4 * scale).toFixed(2);
   if (pick === 0) n.loA = n.loA + nudge();
@@ -219,6 +225,10 @@ function mutate(g, rnd) {
     n.ttcHi = +Math.max(4, Math.min(20, (n.ttcHi || 13) + (rnd() - 0.5) * 4 * scale)).toFixed(1);
   } else if (pick === 15) {
     n.ttcPanic = +Math.max(0, Math.min(6, (n.ttcPanic || 3) + (rnd() - 0.5) * 2 * scale)).toFixed(1);
+  } else if (pick === 16) {
+    n.mlpVeto = +Math.max(0, Math.min(0.45, (n.mlpVeto ?? 0.25) + (rnd() - 0.5) * 0.2 * scale)).toFixed(2);
+  } else if (pick === 17) {
+    n.mlpRescue = +Math.max(0.55, Math.min(0.99, (n.mlpRescue ?? 0.8) + (rnd() - 0.5) * 0.2 * scale)).toFixed(2);
   } else {
     // mutate ONE BAND's offset: the axis option B adds
     n.bands = (n.bands || BANDS.map(() => ({ lo: 0, w: 0 }))).map((b) => ({ ...b }));
@@ -359,7 +369,7 @@ save(S);
 // episodes per candidate here: with cv 0.32 the median of 4 is noisy, but
 // selecting the best of 24 noisy estimates still moves faster than the best
 // of 6 precise ones.
-const POP = 12;
+const POP = 8;
 // cv measured at 0.32 for a fixed genome, so a 3-episode mean carries a
 // standard error too large to select on. 5 gives a usable median while
 // keeping a generation (5 x 6 = 30 episodes) observable: at 9 episodes per
@@ -369,9 +379,16 @@ const EPISODES_PER_FULL = 8;
  *  a datapoint in reasonable time at the default 1x rate; later generations
  *  use the full budget for a trustworthy median. */
 export function episodesFor(gen) {
-  return gen === 0 ? 3 : EPISODES_PER_FULL;
+  // ONE run per candidate, always. The model is corrected after every
+  // episode, so a candidate re-evaluated later is judged by DIFFERENT
+  // weights - repeating it 8 times in a row just averages away the
+  // adjustment we made in between.
+  return 1;
 }
-const EPISODES_PER = EPISODES_PER_FULL;
+// With one episode per candidate a "median" is that single score. Noise is
+// handled by re-encountering good genomes across generations via elitism
+// rather than by repeating them back-to-back.
+const EPISODES_PER = 1;
 const ELITE = 4;
 
 function seedPopulation() {

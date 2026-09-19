@@ -691,6 +691,18 @@ function frame() {
         const k = ctxKey(probe);
         const e = (t.ctx[k] = t.ctx[k] || { ok: 0, fail: 0, okGap: [], failGap: [], noJump: 0 });
         e.noJump = (e.noJump || 0) + 1;
+        // An omission is a NEGATIVE example for this situation: at this
+        // gap/speed/width, failing to take off ended the run. Without these
+        // the model saw only successes (measured 104 ok / 0 fail, pOk 1.0)
+        // and could never fire a correction.
+        if (Number.isFinite(t.lastGap) && Math.abs(t.lastGap) < 500) {
+          knn.add(
+            featurize({ gap: t.lastGap, speed: t.lastSpeed || 6,
+                        width: t.lastWidth || 0, next: null }),
+            false,
+            Math.round(t.lastGap),
+          );
+        }
         t.lastFailure = { kind: "noJump", ctx: k, speed: probe.speed, wide: probe.wide };
       }
       let cause;
@@ -764,6 +776,7 @@ function frame() {
   tel.lastGap = s.gap; tel.lastWide = s.wide; tel.lastHigh = s.high;
   tel.lastAir = s.airborne; tel.lastY = Math.round(s.y === undefined ? 93 : s.y);
   tel.lastSpeed = s.speed;
+  tel.lastWidth = s.width;
 
   // attribute progress to the band that was active while it was earned
   const here = Math.max(0, s.distance - epStart);

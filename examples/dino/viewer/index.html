@@ -151,8 +151,14 @@ tr.ctrl td{color:var(--warn)}
      frame during boot, and a callback registered against the real rAF is
      invisible to our queue (symptom: raqId=1 while CLOCK.cbs is empty, so
      stepping advances nothing). -->
+<!-- tfjs + knn-classifier as globals, loaded before the driver. Backend is
+     forced to CPU in knn.js: measured 0.74ms/predict on cpu against
+     12.14ms on webgl for 4-feature tensors, where kernel-launch overhead
+     dominates and 12ms will not fit a 16.7ms frame. -->
+<script src="tf.min.js"></script>
+<script src="knn-classifier.min.js"></script>
 <script src="clock.js?p=35"></script>
 <script src="game.js?p=47"></script>
-<script type="module" src="drive.js?p=69"></script>
+<script type="module" src="drive.js?p=78"></script>
 </body>
 </html>

@@ -705,6 +705,10 @@ function frame() {
       lastDist = 0;
       epInCand++;
       log(`${candName(cand)} -> ${Math.round(dist * 0.025)}pts`);
+      // persist the learned model with the episode, not only at generation
+      // close - otherwise a short session looks like nothing was learned
+      saveKnn();
+      saveAnalysis();
       tableDirty = true;
 
       // Drive on cand.runs, which PERSISTS, not on epInCand which resets on

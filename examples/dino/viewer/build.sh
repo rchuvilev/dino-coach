@@ -38,6 +38,10 @@ html = html.replace('src="offline-sprite-2x.png"', f'src="{data_uri("offline-spr
 
 # inline the scripts, preserving load order: clock BEFORE game (a callback
 # registered against the real rAF is invisible to our queue), bundle last.
+tfjs = open('tf.min.js').read()
+knnlib = open('knn-classifier.min.js').read()
+html = html.replace('<script src="tf.min.js"></script>', '<script>\n' + tfjs + '\n</script>')
+html = html.replace('<script src="knn-classifier.min.js"></script>', '<script>\n' + knnlib + '\n</script>')
 html = re.sub(r'<script src="clock\.js[^"]*"></script>', '<script>\n' + clock + '\n</script>', html)
 html = re.sub(r'<script src="game\.js[^"]*"></script>', '<script>\n' + game + '\n</script>', html)
 html = re.sub(r'<script type="module" src="drive\.js[^"]*"></script>', '<script>\n' + bundle + '\n</script>', html)

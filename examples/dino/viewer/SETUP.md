@@ -47,3 +47,22 @@ it. Script order is preserved: clock before game, bundle last.
   autosave, so an experiment cannot overwrite a checkpoint.
 - **Export / Import** — the same state as a `.json` file. Imports run through
   the same migration as stored state, so older exports still load.
+
+## TensorFlow.js
+
+The KNN tier uses `@tensorflow-models/knn-classifier`. Fetch both libraries
+into this directory before building:
+
+```sh
+npm install @tensorflow/tfjs @tensorflow-models/knn-classifier
+cp node_modules/@tensorflow/tfjs/dist/tf.min.js .
+cp node_modules/@tensorflow-models/knn-classifier/dist/knn-classifier.min.js .
+```
+
+`build.sh` inlines both, so the standalone page stays offline-capable at the
+cost of size: **1599 KB**, up from 140 KB.
+
+**The backend is forced to CPU.** Measured in-browser with 300 examples of 4
+features: `cpu 0.74 ms/predict` against `webgl 12.14 ms/predict`. WebGL loses
+because kernel-launch overhead dominates at this tensor size, and 12 ms does
+not fit a 16.7 ms frame that also has to run the game.

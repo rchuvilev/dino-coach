@@ -4,3 +4,6 @@ node_modules/
 examples/dino/viewer/game.js
 examples/dino/viewer/game.orig.js
 examples/dino/viewer/dino-standalone.html
+examples/dino/viewer/tf.min.js
+examples/dino/viewer/knn-classifier.min.js
+examples/dino/viewer/node_modules/

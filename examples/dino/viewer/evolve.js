@@ -417,16 +417,32 @@ export function nextCandidate() {
   // first run of a session: the champion IS the candidate
   if (!S.champion) {
     const g = randomGenome(rnd);
-    S.champion = { g, hash: genomeHash(g), best: 0, runs: 0, changeHash: "initial" };
+    // The initial branch has no edit behind it, so it carries no name.
+    S.champion = { g, hash: genomeHash(g), edition: "", best: 0, runs: 0,
+                   total: 0, mean: 0, changeHash: "" };
     S.challenger = null;
     return { g, role: "champion", meta: S.champion };
   }
+  // Periodically RE-RUN the champion instead of a challenger. Without this
+  // a lucky first score becomes a permanent, unbeatable bar: measured, a
+  // champion sat at runs:1 mean:1466 while six challengers scoring 181..800
+  // were all rejected and it was never re-measured.
+  S.sinceRetest = (S.sinceRetest || 0) + 1;
+  if (S.sinceRetest >= 3) {
+    S.sinceRetest = 0;
+    S.challenger = null;
+    return { g: S.champion.g, role: "champion", meta: S.champion };
+  }
+
   // propose a challenger: champion + one mutation
   const mutated = mutate(S.champion.g, rnd);
+  const edition = changeHash(S.champion.g, mutated);
   S.challenger = {
     g: mutated,
     hash: genomeHash(mutated),
-    changeHash: changeHash(S.champion.g, mutated),
+    // the EDITION is what names this candidate: the hash of the edit itself
+    edition,
+    changeHash: edition,
   };
   return { g: mutated, role: "challenger", meta: S.challenger };
 }
@@ -436,13 +452,19 @@ export function nextCandidate() {
  * @returns {{promoted:boolean, champion:object, result:number}}
  */
 /** Upsert a model into the ledger, keyed by its hash. */
-function ledgerRecord(hash, changeHash, score, promoted) {
+/**
+ * @param score POINTS already, not raw distance. The table previously
+ * divided again by the same coefficient, so every ledger score rendered as
+ * 0-7 instead of the real hundreds - a double conversion.
+ */
+function ledgerRecord(hash, edition, score, promoted) {
   S.ledger = S.ledger || [];
   let e = S.ledger.find((x) => x.hash === hash);
   if (!e) {
-    e = { hash, changeHash, best: 0, runs: 0, promoted: false };
+    e = { hash, edition, best: 0, runs: 0, promoted: false };
     S.ledger.push(e);
   }
+  e.edition = edition;
   e.runs++;
   if (score > e.best) e.best = score;
   e.last = Date.now();
@@ -470,28 +492,41 @@ export function currentHash() {
 export function judgeRun(role, score) {
   if (role === "champion") {
     S.champion.runs++;
+    S.champion.total = (S.champion.total || 0) + score;
+    S.champion.mean = Math.round(S.champion.total / S.champion.runs);
     if (score > (S.champion.best || 0)) S.champion.best = score;
-    ledgerRecord(S.champion.hash, S.champion.changeHash, score, false);
+    ledgerRecord(S.champion.hash, S.champion.edition || "", score, false);
     save(S);
     return { promoted: false, champion: S.champion, result: score, reused: true };
   }
   const ch = S.challenger;
   if (!ch) return { promoted: false, champion: S.champion, result: score };
-  const beat = score > (S.champion.best || 0);
-  ledgerRecord(ch.hash, ch.changeHash, score, beat);
+  // Compare against TYPICAL performance, not the lucky record. Until the
+  // champion has a couple of runs its mean is unreliable, so fall back to
+  // the record for the first comparison only.
+  const bar = (S.champion.runs || 0) >= 2
+    ? (S.champion.mean || 0)
+    : (S.champion.best || 0);
+  const beat = score > bar;
+  ledgerRecord(ch.hash, ch.edition, score, beat);
   if (beat) {
     // the change helped: it becomes the model every future run targets
     S.champion = {
       g: ch.g,
       hash: ch.hash,
+      edition: ch.edition,
       best: score,
       runs: 1,
+      total: score,
+      mean: score,
       changeHash: ch.changeHash,
     };
   } else {
-    // it did not help: champion is reused unchanged, and its run count
-    // reflects that another attempt was spent on it
-    S.champion.runs++;
+    // it did not help: champion is reused unchanged. The failed attempt is
+    // NOT folded into the champion's mean - that score belongs to the
+    // challenger, and crediting it to the champion would corrupt the bar
+    // every future challenger must clear.
+    S.challengerFails = (S.challengerFails || 0) + 1;
   }
   S.challenger = null;
   save(S);

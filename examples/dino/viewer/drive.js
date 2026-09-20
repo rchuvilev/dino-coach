@@ -468,29 +468,31 @@ function renderTable() {
   // model that has ACTUALLY RUN, newest activity first, with the one
   // currently on the track highlighted.
   t.innerHTML =
-    "<tr><th>model</th><th class='n'>runs</th><th class='n'>best</th><th>change</th></tr>";
+    "<tr><th>edition</th><th class='n'>runs</th><th class='n'>best pts</th></tr>";
   const rows = ledgerRows();
   const cur = currentHash();
   // The model on the track right now may not be in the ledger yet - it is
   // recorded only when its run finishes. Show it as a provisional row so
   // "where are the candidates now" has an answer mid-run.
   if (cur && !rows.some((r) => r.hash === cur)) {
+    const ci = championInfo();
     rows.unshift({ hash: cur, runs: 0, best: 0,
-      changeHash: (championInfo() && championInfo().hash === cur)
-        ? championInfo().changeHash : "testing", pending: true });
+      edition: ci && ci.hash === cur ? (ci.edition || "initial") : "testing",
+      pending: true });
   }
   if (!rows.length) {
-    t.innerHTML += "<tr><td colspan='4'>no runs yet</td></tr>";
+    t.innerHTML += "<tr><td colspan='3'>no runs yet</td></tr>";
   }
   for (const r of rows.slice(0, 12)) {
     const tr = document.createElement("tr");
     if (r.hash === cur) tr.className = "best";      // currently running
     else if (r.promoted) tr.className = "ctrl";     // was champion at some point
+    // best is stored in POINTS; dividing again produced 0-7 instead of the
+    // real hundreds.
     tr.innerHTML =
-      `<td>${r.hash === cur ? "▶ " : "&nbsp;&nbsp;"}${r.hash}${r.promoted ? " ★" : ""}</td>` +
+      `<td>${r.hash === cur ? "▶ " : "&nbsp;&nbsp;"}${r.edition || "initial"}${r.promoted ? " ★" : ""}</td>` +
       `<td class="n">${r.runs}</td>` +
-      `<td class="n">${r.pending ? "…" : Math.round((r.best || 0) * 0.025)}</td>` +
-      `<td>${r.changeHash || "—"}</td>`;
+      `<td class="n">${r.pending ? "…" : (r.best || 0)}</td>`;
     t.appendChild(tr);
   }
   const St = currentState();
@@ -880,11 +882,11 @@ function frame() {
       if (verdict) {
         const c = verdict.champion;
         log(
-          `${c.hash} · best ${c.best}pts · runs ${c.runs} · chg ${c.changeHash}` +
-            (verdict.promoted ? " · PROMOTED" : ""),
+          `${c.edition || "initial"} · avg ${c.mean || c.best}pts · best ${c.best}pts · runs ${c.runs}` +
+            (verdict.promoted ? " · PROMOTED" : ` · tried ${pts}pts`),
           "episode",
-          { hash: c.hash, best: c.best, runs: c.runs, changeHash: c.changeHash,
-            result: pts, promoted: verdict.promoted },
+          { edition: c.edition || "initial", hash: c.hash, best: c.best,
+            runs: c.runs, result: pts, promoted: verdict.promoted },
         );
       }
       // persist the learned model with the episode, not only at generation

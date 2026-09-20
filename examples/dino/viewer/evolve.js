@@ -265,6 +265,12 @@ const rnd = () => {
 function blank() {
   return {
     version: 1,
+    /**
+     * The reigning model: the one every run targets. Replaced only when a
+     * challenger measurably beats it, otherwise reused unchanged.
+     */
+    champion: null,      // { g, hash, best, runs, changeHash }
+    challenger: null,    // { g, hash, changeHash } currently under test
     sessions: 0,
     startedAt: Date.now(),
     generation: 0,
@@ -390,6 +396,71 @@ export function episodesFor(gen) {
 // rather than by repeating them back-to-back.
 const EPISODES_PER = 1;
 const ELITE = 4;
+
+/**
+ * CHAMPION / CHALLENGER.
+ *
+ * Every run targets the best model found so far. A challenger is that model
+ * plus exactly one change; it is promoted only if it beats the champion's
+ * best, otherwise the champion is reused unchanged and a different change is
+ * tried. This is hill-climbing with an explicit "keep what worked" step,
+ * which population-wide breeding did not have - there a good genome could be
+ * diluted by unrelated candidates and nothing guaranteed reversion.
+ */
+export function nextCandidate() {
+  // first run of a session: the champion IS the candidate
+  if (!S.champion) {
+    const g = randomGenome(rnd);
+    S.champion = { g, hash: genomeHash(g), best: 0, runs: 0, changeHash: "initial" };
+    S.challenger = null;
+    return { g, role: "champion", meta: S.champion };
+  }
+  // propose a challenger: champion + one mutation
+  const mutated = mutate(S.champion.g, rnd);
+  S.challenger = {
+    g: mutated,
+    hash: genomeHash(mutated),
+    changeHash: changeHash(S.champion.g, mutated),
+  };
+  return { g: mutated, role: "challenger", meta: S.challenger };
+}
+
+/**
+ * Judge the run that just finished.
+ * @returns {{promoted:boolean, champion:object, result:number}}
+ */
+export function judgeRun(role, score) {
+  if (role === "champion") {
+    S.champion.runs++;
+    if (score > (S.champion.best || 0)) S.champion.best = score;
+    save(S);
+    return { promoted: false, champion: S.champion, result: score, reused: true };
+  }
+  const ch = S.challenger;
+  if (!ch) return { promoted: false, champion: S.champion, result: score };
+  const beat = score > (S.champion.best || 0);
+  if (beat) {
+    // the change helped: it becomes the model every future run targets
+    S.champion = {
+      g: ch.g,
+      hash: ch.hash,
+      best: score,
+      runs: 1,
+      changeHash: ch.changeHash,
+    };
+  } else {
+    // it did not help: champion is reused unchanged, and its run count
+    // reflects that another attempt was spent on it
+    S.champion.runs++;
+  }
+  S.challenger = null;
+  save(S);
+  return { promoted: beat, champion: S.champion, result: score, reused: !beat };
+}
+
+export function championInfo() {
+  return S.champion;
+}
 
 function seedPopulation() {
   const out = [];
@@ -733,6 +804,35 @@ export function learnedOffsets(tel) {
     };
   }
   return out;
+}
+
+/**
+ * Stable short hash of a genome, so a model can be NAMED in the log and the
+ * same parameters always produce the same name across sessions.
+ */
+export function genomeHash(g) {
+  if (!g) return "------";
+  const str = JSON.stringify(g, Object.keys(g).sort());
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0).toString(36).padStart(6, "0").slice(-6);
+}
+
+/** Hash of only the fields a mutation changed, for the "last change" id. */
+export function changeHash(before, after) {
+  if (!before || !after) return "------";
+  const diff = {};
+  for (const k of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    if (k.startsWith("__")) continue;
+    const a = JSON.stringify(before[k]);
+    const b = JSON.stringify(after[k]);
+    if (a !== b) diff[k] = [before[k], after[k]];
+  }
+  if (!Object.keys(diff).length) return "nochange";
+  return genomeHash(diff);
 }
 
 export function fitnessOf(c) {

@@ -24,7 +24,12 @@ import {
   exportState,
   EPISODES_PER as EP_PER,
   episodesFor,
+  championInfo,
+  changeHash,
+  genomeHash,
   generationComplete,
+  judgeRun,
+  nextCandidate,
   POP as POP_SIZE,
   importState,
   loadSlot,
@@ -236,6 +241,9 @@ document.addEventListener("visibilitychange", () => {
 });
 
 /** True while a jump we issued is still in the air. */
+/** The model this run is testing: champion itself, or champion + 1 change. */
+let current = null;
+
 let jumpLatched = false;
 
 function act(a) {
@@ -389,9 +397,17 @@ function decide(s, g) {
   return { action: "run", rule: 2 };
 }
 
+/** Pick the model for the next run: champion, or champion + one change. */
+function pickCandidate() {
+  current = nextCandidate();
+  return current;
+}
+
 function restartEpisode() {
   const r = R();
   if (!r) return;
+  // every run targets the champion, or the champion plus one change
+  pickCandidate();
   r.restart();
   for (let i = 0; i < 8; i++) CLOCK.step();
   // A jump starts the game, but the dino must be back on the ground before
@@ -746,7 +762,10 @@ const EP_FRAME_CAP = 9000;  // ~150s of game time; beyond this the candidate
 
 function frame() {
   if (!running) return;
-  const cand = pop[idx];
+  // The model under test this run. Falls back to the population slot only
+  // if the champion loop has not initialised yet.
+  if (!current) pickCandidate();
+  const cand = current ? { g: current.g } : pop[idx];
   const s = read();
   if (!s) return;
 
@@ -836,11 +855,20 @@ function frame() {
       bandDist = BANDS.map(() => 0);
       lastDist = 0;
       epInCand++;
-      log(
-        `ep${(currentState().episodes || 0) + 1} ${Math.round(dist * 0.025)}pts · ${cause} · ${candName(cand)}`,
-        "episode",
-        { pts: Math.round(dist * 0.025), cause, genome: candName(cand) },
-      );
+      // JUDGE the run against the reigning champion, then log ONLY the four
+      // things asked for: model name, its best, its run count, last change.
+      const pts = Math.round(dist * 0.025);
+      const verdict = current ? judgeRun(current.role, pts) : null;
+      if (verdict) {
+        const c = verdict.champion;
+        log(
+          `${c.hash} · best ${c.best}pts · runs ${c.runs} · chg ${c.changeHash}` +
+            (verdict.promoted ? " · PROMOTED" : ""),
+          "episode",
+          { hash: c.hash, best: c.best, runs: c.runs, changeHash: c.changeHash,
+            result: pts, promoted: verdict.promoted },
+        );
+      }
       // persist the learned model with the episode, not only at generation
       // close - otherwise a short session looks like nothing was learned
       saveKnn();

@@ -386,8 +386,11 @@ function decide(s, g) {
     pClear !== null && canJump && pClear < (g.mlpVeto === undefined ? 0.25 : g.mlpVeto);
   // RESCUE: the rules are NOT jumping, but the model says a jump would
   // clear and the obstacle is close enough that doing nothing kills us.
+  // A high obstacle is never a jump target: jumping INTO a pterodactyl is
+  // the collision, not the escape. Ducking is the correct response, so the
+  // rescue path must stay out of the way for high obstacles.
   const rescue =
-    pClear !== null && !canJump && !canDuck && !s.airborne &&
+    pClear !== null && !canJump && !canDuck && !s.airborne && !s.high &&
     s.gap > 0 && s.gap < 60 &&
     pClear > (g.mlpRescue === undefined ? 0.8 : g.mlpRescue);
 

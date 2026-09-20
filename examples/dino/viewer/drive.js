@@ -565,6 +565,29 @@ function drawChart() {
   ctx.fillText("control", pad + 54, c.height - 4);
 }
 
+/**
+ * Ballistic landing prediction for the jump currently in flight.
+ *
+ * Uses the game's own physics constants rather than a fitted curve: yPos
+ * rises by jumpVelocity each frame and jumpVelocity increases by GRAVITY,
+ * so time-to-ground solves from the standard quadratic. Horizontal travel
+ * is that time times the world speed, because the dino's x is fixed and the
+ * WORLD moves - the landing point is where the ground under it will be.
+ */
+function predictLanding(r) {
+  const t = r && r.tRex;
+  if (!t || !t.jumping) return null;
+  const g = (t.config && t.config.GRAVITY) || 0.6;
+  const ground = t.groundYPos || 93;
+  const y0 = ground - t.yPos;          // height above ground, positive up
+  const v0 = -(t.jumpVelocity || 0);   // upward positive
+  const disc = v0 * v0 + 2 * g * y0;
+  if (disc < 0) return null;
+  const frames = (v0 + Math.sqrt(disc)) / g;
+  if (!Number.isFinite(frames) || frames < 0) return null;
+  return { frames, dx: frames * (r.currentSpeed || 6) };
+}
+
 function overlay(s, g) {
   const r = R();
   const c = $("ov");
@@ -623,6 +646,28 @@ function overlay(s, g) {
     ctx.fillStyle = "rgba(61,220,132,.18)";
     ctx.fillRect(x0, top, (w.hi - w.lo) * scale, cr.height);
   }
+  // LANDING MARKER: where this jump actually puts us down. A marker sitting
+  // on top of an obstacle is a mistimed takeoff made visible.
+  const land = predictLanding(r);
+  if (land) {
+    const lx = cr.left - wr.left + (r.tRex.xPos + 44 + land.dx) * scale;
+    const gy = cr.top - wr.top + (r.tRex.groundYPos || 93) * scale;
+    // does it land ON the obstacle?
+    const onObstacle =
+      s.gap < 99999 && land.dx > s.gap - 10 && land.dx < s.gap + (s.width || 0) + 10;
+    ctx.strokeStyle = onObstacle ? "rgba(255,61,127,.95)" : "rgba(61,220,132,.95)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(lx, gy - 14 * scale);
+    ctx.lineTo(lx, gy + 4 * scale);
+    ctx.stroke();
+    // foot marker
+    ctx.beginPath();
+    ctx.arc(lx, gy, 3, 0, Math.PI * 2);
+    ctx.fillStyle = onObstacle ? "rgba(255,61,127,.9)" : "rgba(61,220,132,.9)";
+    ctx.fill();
+  }
+
   if (s.gap < 99999) {
     const x = cr.left - wr.left + (r.tRex.xPos + 44 + s.gap) * scale;
     ctx.strokeStyle = "rgba(78,161,255,.95)";

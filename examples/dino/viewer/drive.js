@@ -654,10 +654,30 @@ function overlay(s, g) {
   // (measured: dino at game x=50 lands at pixel 104, obstacle at 136 at
   // pixel 274). cssPerGameUnit therefore combines that draw scale with the
   // css downscale of the backing store.
-  const drawScale = r.canvas.width / (r.dimensions && r.dimensions.WIDTH
-    ? r.dimensions.WIDTH : r.canvas.width / 2);
-  const scale = (cr.width / r.canvas.width) * drawScale;
-  const top = cr.top - wr.top;
+  // MEASURED, not assumed: the backing store is 866x300 shown in 433x150 CSS
+  // px while dimensions.WIDTH is 433, so ONE GAME UNIT IS ONE CSS PIXEL.
+  // The previous drawScale term double-counted the 2x backing store and
+  // inflated every overlay coordinate, which is what pushed the obstacle
+  // boxes forward and lifted the lines off the ground.
+  const scale = cr.width / ((r.dimensions && r.dimensions.WIDTH) || cr.width);
+  const ox0 = cr.left - wr.left;
+  const oy0 = cr.top - wr.top;
+  // Sprites are drawn 2px below their reported yPos (constant offset,
+  // verified over 6 airborne samples with zero variance).
+  const SPRITE_DY = 2;
+  // Obstacles render 8px below their reported yPos (measured: PTERODACTYL
+  // yPos 50 -> sprite band top at CSS 58).
+  const OBSTACLE_DY = 8;
+  // config.HEIGHT (47) is the sprite-sheet CELL height; the dino's visible
+  // hull is 35px (measured: top CSS 95, bottom CSS 130 on a grounded frame).
+  // Using 47 drew the box 12px through the ground.
+  const DINO_H = 35;
+  // The VISUAL ground line. Measured at CSS y=131 on a 150-tall canvas;
+  // expressed as a ratio so a resize cannot silently invalidate it.
+  // groundYPos reports 93, a collision-space value that is NOT where the
+  // ground renders - using it put the landing line 38px too high.
+  const groundCSS = ((r.dimensions && r.dimensions.HEIGHT) || 150) * (131 / 150);
+  const top = oy0;
   // takeoff window of the ACTIVE genome
   if (g && !g.never && !g.always) {
     let w = windowAt(g, s.speed);
@@ -703,10 +723,10 @@ function overlay(s, g) {
   // DINO BOUNDING BOX, so the agent's own hull is visible against the
   // obstacle boxes rather than implied by a bare x position.
   {
-    const dxp = cr.left - wr.left + r.tRex.xPos * scale;
-    const dyp = cr.top - wr.top + r.tRex.yPos * scale;
+    const dxp = ox0 + r.tRex.xPos * scale;
+    const dyp = oy0 + (r.tRex.yPos + SPRITE_DY) * scale;
     const dw = (r.tRex.config?.WIDTH || 44) * scale;
-    const dh = (r.tRex.config?.HEIGHT || 47) * scale;
+    const dh = DINO_H * scale;
     ctx.strokeStyle = "rgba(255,214,0,.95)";
     ctx.lineWidth = 1.5;
     ctx.strokeRect(dxp + 0.5, dyp + 0.5, dw, dh);
@@ -717,10 +737,9 @@ function overlay(s, g) {
     // the whole jump arc legible as a span, not a single instant.
     if (r.tRex.jumping && jumpStartX != null) {
       const jx = cr.left - wr.left + jumpStartX * scale;
-      // Hull-height vertical line: from the dino's standing feet up by one
-      // hull height. The earlier form (gy0+dh-dh) cancelled to a zero-length
-      // line and drew nothing.
-      const feet = cr.top - wr.top + ((r.tRex.groundYPos || 93) + dh / scale) * scale;
+      // Hull-height vertical line rising from the VISUAL ground. Anchoring
+      // it to groundYPos(93) drew it floating well above the ground line.
+      const feet = oy0 + groundCSS * scale;
       ctx.strokeStyle = "rgba(80,160,255,.95)";
       ctx.lineWidth = 2;
       ctx.beginPath();
@@ -744,15 +763,15 @@ function overlay(s, g) {
       if (y >= ground) break;
     }
     if (pts.length > 2) {
-      const bx = cr.left - wr.left + r.tRex.xPos * scale;
-      const hw = ((r.tRex.config && r.tRex.config.WIDTH) || 44) * scale / 2;
+      const bx = ox0 + r.tRex.xPos * scale;
+      const hw = 0;
       ctx.strokeStyle = "rgba(80,160,255,.9)";
       ctx.lineWidth = 2;
       ctx.setLineDash([4, 3]);
       ctx.beginPath();
       pts.forEach((p, i) => {
         const px = bx + hw + p[0] * scale;
-        const py = cr.top - wr.top + p[1] * scale;
+        const py = oy0 + (p[1] + SPRITE_DY) * scale;
         i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
       });
       ctx.stroke();
@@ -764,8 +783,10 @@ function overlay(s, g) {
   // on top of an obstacle is a mistimed takeoff made visible.
   const land = predictLanding(r);
   if (land) {
-    const lx = cr.left - wr.left + (r.tRex.xPos + 44 + land.dx) * scale;
-    const gy = cr.top - wr.top + (r.tRex.groundYPos || 93) * scale;
+    // Landing x is measured from the dino's own left edge, not from a
+    // hardcoded +44 that assumed a different origin.
+    const lx = ox0 + (r.tRex.xPos + land.dx) * scale;
+    const gy = oy0 + groundCSS * scale;
     // does it land ON the obstacle?
     const onObstacle =
       s.gap < 99999 && land.dx > s.gap - 10 && land.dx < s.gap + (s.width || 0) + 10;
@@ -788,6 +809,40 @@ function overlay(s, g) {
     ctx.fill();
   }
 
+  // COLLISION POINT on failure: a red dot at the centre of the overlap
+  // between the dino's box and the obstacle it hit. Drawn only while
+  // crashed, so the frame that killed the run is self-explaining.
+  if (r.crashed) {
+    const dL = r.tRex.xPos, dR = dL + (r.tRex.config.WIDTH || 44);
+    const dT = r.tRex.yPos + SPRITE_DY, dB = dT + DINO_H;
+    let hit = null, bestArea = 0;
+    for (const o of (r.horizon && r.horizon.obstacles) || []) {
+      const oL = o.xPos, oR = oL + (o.width || 10);
+      const oT = (o.yPos || 0) + OBSTACLE_DY;
+      const oB = oT + ((o.typeConfig && o.typeConfig.height) || 35);
+      const iw = Math.min(dR, oR) - Math.max(dL, oL);
+      const ih = Math.min(dB, oB) - Math.max(dT, oT);
+      // Overlapping boxes are the real hit. If nothing overlaps (the game
+      // can crash a frame after separation) fall back to the nearest one.
+      const area = iw > 0 && ih > 0 ? iw * ih : 0;
+      const score = area > 0 ? area : -Math.abs(oL - dR) / 1000;
+      if (hit === null || score > bestArea) { bestArea = score; hit = { oL, oR, oT, oB, area }; }
+    }
+    if (hit) {
+      const cxp = hit.area > 0
+        ? (Math.max(dL, hit.oL) + Math.min(dR, hit.oR)) / 2
+        : (dR + hit.oL) / 2;
+      const cyp = hit.area > 0
+        ? (Math.max(dT, hit.oT) + Math.min(dB, hit.oB)) / 2
+        : (Math.max(dT, hit.oT) + Math.min(dB, hit.oB)) / 2;
+      const px = ox0 + cxp * scale, py = oy0 + cyp * scale;
+      ctx.fillStyle = "rgba(255,40,40,.98)";
+      ctx.beginPath(); ctx.arc(px, py, 5, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = "rgba(255,255,255,.9)"; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(px, py, 5, 0, Math.PI * 2); ctx.stroke();
+    }
+  }
+
   // LIGHT RED over every obstacle currently on screen, so what the agent is
   // trying to clear is visible alongside where it will land.
   const tx = r.tRex.xPos + 44;
@@ -797,10 +852,13 @@ function overlay(s, g) {
     // TRUE BOUNDING BOX, not a full-height stripe. A stripe cannot show
     // vertical extent, so a high-flying pterodactyl and a ground cactus
     // looked identical - exactly the distinction the jump decision turns on.
-    const ox = cr.left - wr.left + (tx + d) * scale;
+    // Draw at the obstacle's OWN xPos. The old form added the dino's xPos
+    // plus a hardcoded 44 on top of the gap, which shifted every box
+    // forward by roughly a dino width.
+    const ox = ox0 + o.xPos * scale;
     const ow = Math.max(3, (o.width || 10) * scale);
     const oh = Math.max(3, ((o.typeConfig && o.typeConfig.height) || 35) * scale);
-    const oy = cr.top - wr.top + (o.yPos || 0) * scale;
+    const oy = oy0 + ((o.yPos || 0) + OBSTACLE_DY) * scale;
     ctx.fillStyle = "rgba(255,120,120,.22)";
     ctx.fillRect(ox, oy, ow, oh);
     ctx.strokeStyle = "rgba(255,120,120,.95)";

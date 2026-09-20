@@ -25,6 +25,8 @@ import {
   EPISODES_PER as EP_PER,
   episodesFor,
   championInfo,
+  currentHash,
+  ledgerRows,
   changeHash,
   genomeHash,
   generationComplete,
@@ -461,20 +463,36 @@ function renderRules(fired, s, g) {
 function renderTable() {
   const S = currentState();
   const t = $("tbl");
+  // The population table listed candidates that never played once the
+  // champion/challenger loop replaced population breeding. This lists every
+  // model that has ACTUALLY RUN, newest activity first, with the one
+  // currently on the track highlighted.
   t.innerHTML =
-    "<tr><th>candidate</th><th class='n'>runs</th><th class='n'>median</th><th class='n'>best</th></tr>";
-  const evolved = pop.filter((c) => !c.ctrl);
-  const top = Math.max(0, ...evolved.map((c) => c.median || 0));
-  pop.forEach((c) => {
+    "<tr><th>model</th><th class='n'>runs</th><th class='n'>best</th><th>change</th></tr>";
+  const rows = ledgerRows();
+  const cur = currentHash();
+  // The model on the track right now may not be in the ledger yet - it is
+  // recorded only when its run finishes. Show it as a provisional row so
+  // "where are the candidates now" has an answer mid-run.
+  if (cur && !rows.some((r) => r.hash === cur)) {
+    rows.unshift({ hash: cur, runs: 0, best: 0,
+      changeHash: (championInfo() && championInfo().hash === cur)
+        ? championInfo().changeHash : "testing", pending: true });
+  }
+  if (!rows.length) {
+    t.innerHTML += "<tr><td colspan='4'>no runs yet</td></tr>";
+  }
+  for (const r of rows.slice(0, 12)) {
     const tr = document.createElement("tr");
-    if (c.ctrl) tr.className = "ctrl";
-    else if (c.median && c.median === top) tr.className = "best";
+    if (r.hash === cur) tr.className = "best";      // currently running
+    else if (r.promoted) tr.className = "ctrl";     // was champion at some point
     tr.innerHTML =
-      `<td>${candName(c)}${c.elite ? " ★" : ""}</td><td class="n">${c.runs}</td>` +
-      `<td class="n">${c.median ? Math.round(c.median * 0.025) : "—"}</td>` +
-      `<td class="n">${c.best ? Math.round(c.best * 0.025) : "—"}</td>`;
+      `<td>${r.hash === cur ? "▶ " : "&nbsp;&nbsp;"}${r.hash}${r.promoted ? " ★" : ""}</td>` +
+      `<td class="n">${r.runs}</td>` +
+      `<td class="n">${r.pending ? "…" : Math.round((r.best || 0) * 0.025)}</td>` +
+      `<td>${r.changeHash || "—"}</td>`;
     t.appendChild(tr);
-  });
+  }
   const St = currentState();
   const cz = St.causes || {};
   const total = Object.values(cz).reduce((a, b) => a + b, 0) || 1;

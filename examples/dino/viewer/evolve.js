@@ -271,6 +271,12 @@ function blank() {
      */
     champion: null,      // { g, hash, best, runs, changeHash }
     challenger: null,    // { g, hash, changeHash } currently under test
+    /**
+     * Every model that has actually run, newest activity first. This is what
+     * the UI lists: the population table showed candidates that never played
+     * once the champion/challenger loop replaced population breeding.
+     */
+    ledger: [],          // [{ hash, best, runs, changeHash, last, promoted }]
     sessions: 0,
     startedAt: Date.now(),
     generation: 0,
@@ -429,16 +435,50 @@ export function nextCandidate() {
  * Judge the run that just finished.
  * @returns {{promoted:boolean, champion:object, result:number}}
  */
+/** Upsert a model into the ledger, keyed by its hash. */
+function ledgerRecord(hash, changeHash, score, promoted) {
+  S.ledger = S.ledger || [];
+  let e = S.ledger.find((x) => x.hash === hash);
+  if (!e) {
+    e = { hash, changeHash, best: 0, runs: 0, promoted: false };
+    S.ledger.push(e);
+  }
+  e.runs++;
+  if (score > e.best) e.best = score;
+  e.last = Date.now();
+  e.seq = (S.episodes || 0) + e.runs;   // monotonic recency
+  if (promoted) e.promoted = true;
+  // bounded: keep the most recently active models
+  if (S.ledger.length > 60) {
+    S.ledger.sort((a, b) => (b.last || 0) - (a.last || 0));
+    S.ledger = S.ledger.slice(0, 60);
+  }
+  return e;
+}
+
+export function ledgerRows() {
+  const rows = [...(S.ledger || [])];
+  // newest activity first, as requested
+  rows.sort((a, b) => (b.last || 0) - (a.last || 0));
+  return rows;
+}
+
+export function currentHash() {
+  return S.challenger ? S.challenger.hash : S.champion ? S.champion.hash : null;
+}
+
 export function judgeRun(role, score) {
   if (role === "champion") {
     S.champion.runs++;
     if (score > (S.champion.best || 0)) S.champion.best = score;
+    ledgerRecord(S.champion.hash, S.champion.changeHash, score, false);
     save(S);
     return { promoted: false, champion: S.champion, result: score, reused: true };
   }
   const ch = S.challenger;
   if (!ch) return { promoted: false, champion: S.champion, result: score };
   const beat = score > (S.champion.best || 0);
+  ledgerRecord(ch.hash, ch.changeHash, score, beat);
   if (beat) {
     // the change helped: it becomes the model every future run targets
     S.champion = {

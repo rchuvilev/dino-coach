@@ -248,6 +248,12 @@ let current = null;
 
 let jumpLatched = false;
 
+/** x position where the current takeoff began, for the overlay's jump-start
+ *  line and arc. Null while grounded. */
+let jumpStartX = null;
+/** dino y at takeoff, so the arc can be drawn from its true origin. */
+let jumpStartY = null;
+
 function act(a) {
   const r = R();
   if (!r) return;
@@ -260,6 +266,12 @@ function act(a) {
     if (jumpLatched || (r.tRex && r.tRex.jumping)) return;
     jumpLatched = true;
     const wasJumping = false;
+    // Remember WHERE this takeoff happened so the overlay can draw the
+    // jump-start line. Captured at the takeoff frame because tRex.xPos is
+    // constant during play - the world moves, not the dino - so it cannot
+    // be recovered afterwards.
+    jumpStartX = r.tRex.xPos;
+    jumpStartY = r.tRex.yPos;
     r.onKeyDown(ev(38, "keydown"));
     r.onKeyUp(ev(38, "keyup"));
     // Shape the arc AFTER startJump - setting jumpVelocity before it is
@@ -688,6 +700,66 @@ function overlay(s, g) {
     ctx.fillStyle = "rgba(61,220,132,.18)";
     ctx.fillRect(x0, top, (w.hi - w.lo) * scale, cr.height);
   }
+  // DINO BOUNDING BOX, so the agent's own hull is visible against the
+  // obstacle boxes rather than implied by a bare x position.
+  {
+    const dxp = cr.left - wr.left + r.tRex.xPos * scale;
+    const dyp = cr.top - wr.top + r.tRex.yPos * scale;
+    const dw = (r.tRex.config?.WIDTH || 44) * scale;
+    const dh = (r.tRex.config?.HEIGHT || 47) * scale;
+    ctx.strokeStyle = "rgba(255,214,0,.95)";
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(dxp + 0.5, dyp + 0.5, dw, dh);
+    ctx.fillStyle = "rgba(255,214,0,.12)";
+    ctx.fillRect(dxp, dyp, dw, dh);
+    // JUMP-START marker: vertical BLUE line at the x where this jump began,
+    // drawn one hull-height tall. Together with the landing line it makes
+    // the whole jump arc legible as a span, not a single instant.
+    if (r.tRex.jumping && jumpStartX != null) {
+      const jx = cr.left - wr.left + jumpStartX * scale;
+      // Hull-height vertical line: from the dino's standing feet up by one
+      // hull height. The earlier form (gy0+dh-dh) cancelled to a zero-length
+      // line and drew nothing.
+      const feet = cr.top - wr.top + ((r.tRex.groundYPos || 93) + dh / scale) * scale;
+      ctx.strokeStyle = "rgba(80,160,255,.95)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(jx, feet);
+      ctx.lineTo(jx, feet - dh);
+      ctx.stroke();
+    }
+  }
+
+  // TRAJECTORY ARC between the jump-start line and the landing line.
+  // Integrated with the game's OWN gravity/velocity rather than a drawn
+  // parabola, so the curve is the predicted path, not a decorative shape.
+  if (r.tRex.jumping && jumpStartX != null) {
+    const grav = (r.tRex.config && r.tRex.config.GRAVITY) || 0.6;
+    const ground = r.tRex.groundYPos || 93;
+    let y = r.tRex.yPos, v = r.tRex.jumpVelocity || 0, dx = 0;
+    const pts = [[0, y]];
+    for (let i = 0; i < 260 && (y < ground || v < 0); i++) {
+      v += grav; y += v; dx += r.currentSpeed || 6;
+      pts.push([dx, Math.min(y, ground)]);
+      if (y >= ground) break;
+    }
+    if (pts.length > 2) {
+      const bx = cr.left - wr.left + r.tRex.xPos * scale;
+      const hw = ((r.tRex.config && r.tRex.config.WIDTH) || 44) * scale / 2;
+      ctx.strokeStyle = "rgba(80,160,255,.9)";
+      ctx.lineWidth = 2;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      pts.forEach((p, i) => {
+        const px = bx + hw + p[0] * scale;
+        const py = cr.top - wr.top + p[1] * scale;
+        i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+      });
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
+
   // LANDING MARKER: where this jump actually puts us down. A marker sitting
   // on top of an obstacle is a mistimed takeoff made visible.
   const land = predictLanding(r);
@@ -700,11 +772,15 @@ function overlay(s, g) {
     // LIGHT BLUE landing marker. Turns hot pink only when it lands ON the
     // obstacle, which is the one case worth shouting about.
     const landCol = onObstacle ? "rgba(255,61,127,.95)" : "rgba(120,200,255,.95)";
+    // HORIZONTAL blue line at the estimated landing spot, spanning the hull
+    // width the dino will occupy on touchdown - so overlap with an obstacle
+    // box is read off directly instead of inferred from a single tick.
+    const hullW = (r.tRex.config?.WIDTH || 44) * scale;
     ctx.strokeStyle = landCol;
-    ctx.lineWidth = 2;
+    ctx.lineWidth = 2.5;
     ctx.beginPath();
-    ctx.moveTo(lx, gy - 16 * scale);
-    ctx.lineTo(lx, gy + 4 * scale);
+    ctx.moveTo(lx - hullW / 2, gy);
+    ctx.lineTo(lx + hullW / 2, gy);
     ctx.stroke();
     ctx.beginPath();
     ctx.arc(lx, gy, 3.5, 0, Math.PI * 2);
@@ -718,13 +794,18 @@ function overlay(s, g) {
   for (const o of (r.horizon && r.horizon.obstacles) || []) {
     const d = o.xPos - tx;
     if (d < -40 || d > 400) continue;
+    // TRUE BOUNDING BOX, not a full-height stripe. A stripe cannot show
+    // vertical extent, so a high-flying pterodactyl and a ground cactus
+    // looked identical - exactly the distinction the jump decision turns on.
     const ox = cr.left - wr.left + (tx + d) * scale;
     const ow = Math.max(3, (o.width || 10) * scale);
-    ctx.fillStyle = "rgba(255,120,120,.28)";
-    ctx.fillRect(ox, top, ow, cr.height);
-    ctx.strokeStyle = "rgba(255,120,120,.85)";
+    const oh = Math.max(3, ((o.typeConfig && o.typeConfig.height) || 35) * scale);
+    const oy = cr.top - wr.top + (o.yPos || 0) * scale;
+    ctx.fillStyle = "rgba(255,120,120,.22)";
+    ctx.fillRect(ox, oy, ow, oh);
+    ctx.strokeStyle = "rgba(255,120,120,.95)";
     ctx.lineWidth = 1;
-    ctx.strokeRect(ox + 0.5, top + 0.5, ow, cr.height - 1);
+    ctx.strokeRect(ox + 0.5, oy + 0.5, ow, oh);
   }
 }
 

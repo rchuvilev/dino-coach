@@ -602,7 +602,13 @@ function overlay(s, g) {
   if (!r || !r.canvas || !s) return;
   const cr = r.canvas.getBoundingClientRect();
   const wr = wrap.getBoundingClientRect();
-  const scale = cr.width / r.canvas.width;
+  // The game draws at ~2x its own coordinate units into the backing store
+  // (measured: dino at game x=50 lands at pixel 104, obstacle at 136 at
+  // pixel 274). cssPerGameUnit therefore combines that draw scale with the
+  // css downscale of the backing store.
+  const drawScale = r.canvas.width / (r.dimensions && r.dimensions.WIDTH
+    ? r.dimensions.WIDTH : r.canvas.width / 2);
+  const scale = (cr.width / r.canvas.width) * drawScale;
   const top = cr.top - wr.top;
   // takeoff window of the ACTIVE genome
   if (g && !g.never && !g.always) {
@@ -655,27 +661,34 @@ function overlay(s, g) {
     // does it land ON the obstacle?
     const onObstacle =
       s.gap < 99999 && land.dx > s.gap - 10 && land.dx < s.gap + (s.width || 0) + 10;
-    ctx.strokeStyle = onObstacle ? "rgba(255,61,127,.95)" : "rgba(61,220,132,.95)";
+    // LIGHT BLUE landing marker. Turns hot pink only when it lands ON the
+    // obstacle, which is the one case worth shouting about.
+    const landCol = onObstacle ? "rgba(255,61,127,.95)" : "rgba(120,200,255,.95)";
+    ctx.strokeStyle = landCol;
     ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.moveTo(lx, gy - 14 * scale);
+    ctx.moveTo(lx, gy - 16 * scale);
     ctx.lineTo(lx, gy + 4 * scale);
     ctx.stroke();
-    // foot marker
     ctx.beginPath();
-    ctx.arc(lx, gy, 3, 0, Math.PI * 2);
-    ctx.fillStyle = onObstacle ? "rgba(255,61,127,.9)" : "rgba(61,220,132,.9)";
+    ctx.arc(lx, gy, 3.5, 0, Math.PI * 2);
+    ctx.fillStyle = landCol;
     ctx.fill();
   }
 
-  if (s.gap < 99999) {
-    const x = cr.left - wr.left + (r.tRex.xPos + 44 + s.gap) * scale;
-    ctx.strokeStyle = "rgba(78,161,255,.95)";
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(x, top);
-    ctx.lineTo(x, top + cr.height);
-    ctx.stroke();
+  // LIGHT RED over every obstacle currently on screen, so what the agent is
+  // trying to clear is visible alongside where it will land.
+  const tx = r.tRex.xPos + 44;
+  for (const o of (r.horizon && r.horizon.obstacles) || []) {
+    const d = o.xPos - tx;
+    if (d < -40 || d > 400) continue;
+    const ox = cr.left - wr.left + (tx + d) * scale;
+    const ow = Math.max(3, (o.width || 10) * scale);
+    ctx.fillStyle = "rgba(255,120,120,.28)";
+    ctx.fillRect(ox, top, ow, cr.height);
+    ctx.strokeStyle = "rgba(255,120,120,.85)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(ox + 0.5, top + 0.5, ow, cr.height - 1);
   }
 }
 

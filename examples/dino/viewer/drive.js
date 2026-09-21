@@ -1488,6 +1488,16 @@ $("stop").onclick = () => {
   $("stop").disabled = true;
   $("status").textContent = "stopped";
   $("status").className = "tag";
+  // Stop is an explicit "this session is done" signal, so it is a sync
+  // point like a reload is. Without it a session's best work sat unshared
+  // until the tab happened to be navigated away from - and pressing Stop
+  // then leaving the tab open shared nothing at all.
+  share.syncNow(log, true).then((r) => {
+    if (!r) return;
+    if (r.ok && r.why === "published") notePool("published", r);
+    else if (r.ok) notePool("adopted", r);
+    else notePool(r.why === "unchanged" ? "synced" : "idle", r);
+  }).catch(() => { /* a failed sync must not break the stop path */ });
 };
 
 function refreshAll() {

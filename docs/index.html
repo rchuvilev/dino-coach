@@ -2912,7 +2912,7 @@ function report(kind, r) {
 var lastSyncedQuality = null;
 var sincePoolCheck = 0;
 var POOL_CHECK_EVERY = 5;
-async function syncNow(log) {
+async function syncNow(log, force = false) {
   if (!cfg().enabled)
     return { ok: false, why: "not configured" };
   const local = snapshot();
@@ -2926,7 +2926,7 @@ async function syncNow(log) {
     }
     return pulled;
   }
-  if (q === lastSyncedQuality) {
+  if (q === lastSyncedQuality && !force) {
     sincePoolCheck++;
     if (sincePoolCheck < POOL_CHECK_EVERY)
       return { ok: false, why: "unchanged" };
@@ -5264,6 +5264,16 @@ $("stop").onclick = () => {
   $("stop").disabled = true;
   $("status").textContent = "stopped";
   $("status").className = "tag";
+  syncNow(log, true).then((r) => {
+    if (!r)
+      return;
+    if (r.ok && r.why === "published")
+      notePool("published", r);
+    else if (r.ok)
+      notePool("adopted", r);
+    else
+      notePool(r.why === "unchanged" ? "synced" : "idle", r);
+  }).catch(() => {});
 };
 function refreshAll() {
   pop = seedPopulation();

@@ -437,7 +437,7 @@ let lastSyncedQuality = null;
 let sincePoolCheck = 0;
 const POOL_CHECK_EVERY = 5;
 
-export async function syncNow(log) {
+export async function syncNow(log, force = false) {
   if (!cfg().enabled) return { ok: false, why: "not configured" };
   const local = snapshot();
   const q = local ? local.score : null;
@@ -458,7 +458,7 @@ export async function syncNow(log) {
 
   // Quality unchanged: still worth asking whether someone else overtook us,
   // but only occasionally - this runs at the end of every episode.
-  if (q === lastSyncedQuality) {
+  if (q === lastSyncedQuality && !force) {
     sincePoolCheck++;
     if (sincePoolCheck < POOL_CHECK_EVERY) return { ok: false, why: "unchanged" };
     sincePoolCheck = 0;

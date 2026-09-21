@@ -407,3 +407,21 @@ describe("an imported champion is not our score until measured here", () => {
     })).toBe(1800);
   });
 });
+
+describe("an explicit sync is never skipped", () => {
+  test("REGRESSION: the force path exists and is wired to the throttle", () => {
+    // Function.length is 1 because `force = false` is a DEFAULT parameter -
+    // asserting arity proved nothing. Assert the source contract instead:
+    // the unchanged-quality short-circuit must be guarded by !force, or an
+    // explicit Stop would be silently skipped 4 times out of 5.
+    const src = String(share.syncNow);
+    expect(src).toContain("force");
+    expect(/lastSyncedQuality\s*&&\s*!force/.test(src)).toBe(true);
+  });
+
+  test("unconfigured sync fails cleanly rather than throwing", async () => {
+    const r = await share.syncNow(undefined, true);
+    expect(r.ok).toBe(false);
+    expect(r.why).toBe("not configured");
+  });
+});

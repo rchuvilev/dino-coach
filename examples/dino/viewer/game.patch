@@ -53,6 +53,33 @@
              }
          },
          isRunning: function() {
+@@ -718,7 +742,7 @@
+ 
+                     var pct = 50;
+                     var xhrPct = new XMLHttpRequest();
+-                    xhrPct.open('GET', '/inc/pct.php?score=' + currentScore, false);
++                    return; // harness: upstream leaderboard disabled (404s off-origin, and synchronous)
+                     xhrPct.send();
+                     if (xhrPct.status === 200 && xhrPct.responseText !== '') {
+                         var parsed = parseInt(xhrPct.responseText, 10);
+@@ -764,7 +788,7 @@
+ 
+                     if (shouldCheck) {
+                         var xhr = new XMLHttpRequest();
+-                        xhr.open('GET', '/inc/check.php?score=' + currentScore, false);
++                        return; // harness: upstream leaderboard disabled (404s off-origin, and synchronous)
+                         xhr.send();
+                         if (xhr.status === 200 && xhr.responseText != '') {
+                             alert(xhr.responseText);
+@@ -776,7 +800,7 @@
+                         }
+ 
+                         var xhrSet = new XMLHttpRequest();
+-                        xhrSet.open('GET', '/inc/set.php?name=' + encodeURIComponent(saveName) + '&score=' + currentScore, false);
++                        return; // harness: upstream leaderboard disabled (404s off-origin, and synchronous)
+                         xhrSet.send();
+ 
+                         if (typeof window.updateBestScore === 'function') {
 @@ -907,8 +931,15 @@
      }
  

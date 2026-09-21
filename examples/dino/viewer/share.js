@@ -111,6 +111,15 @@ export function validate(o) {
   if (Math.abs(mean - o.score) > 1) {
     return { valid: false, reason: `score ${o.score} disagrees with champion ${mean}` };
   }
+  // A mean can never exceed the best single run. This is what let a
+  // fabricated mean:5000 / best:900 payload into the pool, where it blocked
+  // every real publish until the key was cleared by hand.
+  if (isNum(ch.best) && ch.best > 0 && mean > ch.best + 1) {
+    return { valid: false, reason: `mean ${mean} exceeds best ${ch.best}` };
+  }
+  if (isNum(o.best) && o.best > 0 && o.score > o.best + 1) {
+    return { valid: false, reason: `score ${o.score} exceeds best ${o.best}` };
+  }
 
   // Models are optional (a fresh champion may have neither) but must be
   // well-formed and the right width when present.
@@ -166,6 +175,33 @@ export function snapshot() {
     (e) => isNum(e && (e.score !== undefined ? e.score : e.best)),
   ).length;
   const evidence = Math.max(ch.runs || 0, Math.min(ledN, 999));
+  // Publish the CHAMPION ONLY. The local ledger, population, in-progress
+  // generation and session counters describe this browser's search history,
+  // not transferable skill, and shipping them made the payload 48KB of
+  // mostly-irrelevant state. A receiving client starts a fresh search FROM
+  // the champion, which is the point of a best-only pool.
+  const lean = {
+    version: evolve.version,
+    champion: {
+      g: ch.g,
+      hash: ch.hash,
+      edition: ch.edition || "",
+      best: ch.best || 0,
+      runs: ch.runs || 0,
+      total: ch.total || 0,
+      mean: isNum(ch.mean) ? ch.mean : ch.best || 0,
+    },
+    challenger: null,
+    ledger: [],
+    population: [],
+    inProgress: null,
+    generation: evolve.generation || 0,
+    episodes: evolve.episodes || 0,
+    // knowledge is per-situation takeoff statistics: genuinely transferable,
+    // and what lets an adopting client skip re-learning the same failures.
+    knowledge: evolve.knowledge || {},
+    bestEver: evolve.bestEver || 0,
+  };
   const snap = {
     v: SCHEMA,
     score: q,
@@ -173,7 +209,7 @@ export function snapshot() {
     runs: evidence,
     edition: ch.edition || "",
     at: Date.now(),
-    evolve,
+    evolve: lean,
     mlp: get("dino-mlp-v1"),
     knn: get("dino-knn-v1"),
   };
@@ -346,8 +382,6 @@ let reloadHook = () => {};
 export function onAdopt(fn) { if (typeof fn === "function") reloadHook = fn; }
 
 let lastSyncedQuality = null;
-let lastSyncAt = 0;
-const SYNC_FLOOR_MS = 15000;
 
 export async function syncNow(log) {
   if (!cfg().enabled) return { ok: false, why: "not configured" };
@@ -359,10 +393,6 @@ export async function syncNow(log) {
 
   // The common case: this run did not change what we would publish.
   if (q === lastSyncedQuality) return { ok: false, why: "unchanged" };
-
-  const now = Date.now();
-  if (now - lastSyncAt < SYNC_FLOOR_MS) return { ok: false, why: "throttled" };
-  lastSyncAt = now;
 
   try {
     const res = await pushIfBetter();
@@ -403,13 +433,8 @@ export async function syncNow(log) {
  */
 export function installAutoPush(log) {
   if (!cfg().enabled) return false;
-  let lastAt = 0;
   let warnedUnpublishable = false;
   const fire = () => {
-    // visibilitychange fires on every tab switch and a publish is a network
-    // write; 30s is well below a realistic improvement rate.
-    const now = Date.now();
-    if (now - lastAt < 30000) return;
     const local = snapshot();
     if (!local) {
       // Silence here is indistinguishable from a broken integration, which is
@@ -423,7 +448,6 @@ export function installAutoPush(log) {
       }
       return;
     }
-    lastAt = now;
     const { url, token } = cfg();
     try {
       fetch(url, {

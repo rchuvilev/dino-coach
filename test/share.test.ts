@@ -227,3 +227,84 @@ describe("quality accepts corroborated champions (measured: 96% never reach 3 ru
     expect(share.quality({ champion: { mean: 0, runs: 9 }, ledger: [] })).toBeNull();
   });
 });
+
+describe("an impossible mean cannot enter the pool", () => {
+  test("REGRESSION: the exact payload that poisoned the live pool is rejected", () => {
+    // Real incident, recovered from a client HAR: a hand-written test payload
+    // with mean 5000 but best 900 reached Redis, was pulled by a real client,
+    // and blocked every genuine publish - that client's own training (ledger
+    // best 2287, 11635 trained samples) could never beat a fabricated 5000.
+    const poison = goodPayload({ score: 5000, best: 900 });
+    poison.evolve.champion.mean = 5000;
+    poison.evolve.champion.best = 900;
+    const r = share.validate(poison);
+    expect(r.valid).toBe(false);
+    expect(r.reason).toContain("exceeds best");
+  });
+
+  test("a mean equal to best is fine (one measured run)", () => {
+    const p = goodPayload({ score: 1500, best: 1500 });
+    p.evolve.champion.mean = 1500;
+    p.evolve.champion.best = 1500;
+    expect(share.validate(p).valid).toBe(true);
+  });
+
+  test("a normal mean below best stays valid", () => {
+    expect(share.validate(goodPayload()).valid).toBe(true);
+  });
+});
+
+describe("syncing is not throttled", () => {
+  test("REGRESSION: no time-based floor blocks a sync", () => {
+    // The user asked for every run to sync; a 15s floor silently skipped
+    // publishes and was indistinguishable from a broken integration.
+    const src = share._internals;
+    expect(Object.keys(src)).not.toContain("SYNC_FLOOR_MS");
+  });
+});
+
+describe("the pool carries the champion only", () => {
+  beforeEach(() => store.clear());
+
+  test("publishes the champion and drops local search history", () => {
+    store.setItem("dino-evolve-v1", JSON.stringify({
+      version: 1,
+      champion: {
+        g: { loA: 25, loB: -1, widthA: 30, widthB: -1, duck: 30 },
+        hash: "h1", edition: "win001", mean: 1800, best: 2100, runs: 4,
+      },
+      // all of this is THIS browser's search history, not transferable skill
+      ledger: Array.from({ length: 60 }, (_, i) => ({ hash: "x" + i, best: 100 + i })),
+      population: [{ junk: true }, { junk: true }],
+      inProgress: [{ g: {} }],
+      sessions: 12,
+      knowledge: { "narrow/slow/open": { ok: 10, fail: 1 } },
+    }));
+    const snap = share.snapshot();
+    expect(snap).not.toBeNull();
+    expect(snap!.score).toBe(1800);
+    expect(snap!.evolve.champion.edition).toBe("win001");
+    // history is stripped
+    expect(snap!.evolve.ledger).toEqual([]);
+    expect(snap!.evolve.population).toEqual([]);
+    expect(snap!.evolve.inProgress).toBeNull();
+    // but transferable per-situation knowledge rides along
+    expect(snap!.evolve.knowledge["narrow/slow/open"].ok).toBe(10);
+    // and it still validates for a receiver
+    expect(share.validate(JSON.parse(JSON.stringify(snap))).valid).toBe(true);
+  });
+
+  test("REGRESSION: adopting wipes every local key, not just the models", () => {
+    for (const k of ["dino-evolve-v1", "dino-mlp-v1", "dino-knn-v1",
+                     "dino-analysis-v1", "dino-logs-v1", "dino-evolve-slot-v1"]) {
+      store.setItem(k, JSON.stringify({ mine: true }));
+    }
+    const res = share.install(goodPayload());
+    expect(res.ok).toBe(true);
+    // only what the remote supplied survives
+    expect(store.getItem("dino-analysis-v1")).toBeNull();
+    expect(store.getItem("dino-logs-v1")).toBeNull();
+    expect(store.getItem("dino-evolve-slot-v1")).toBeNull();
+    expect(JSON.parse(store.getItem("dino-evolve-v1")!).champion.edition).toBe("ab12cd");
+  });
+});

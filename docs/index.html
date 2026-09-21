@@ -2681,6 +2681,12 @@ function validate(o) {
   if (Math.abs(mean - o.score) > 1) {
     return { valid: false, reason: `score ${o.score} disagrees with champion ${mean}` };
   }
+  if (isNum(ch.best) && ch.best > 0 && mean > ch.best + 1) {
+    return { valid: false, reason: `mean ${mean} exceeds best ${ch.best}` };
+  }
+  if (isNum(o.best) && o.best > 0 && o.score > o.best + 1) {
+    return { valid: false, reason: `score ${o.score} exceeds best ${o.best}` };
+  }
   if (o.mlp != null) {
     if (!isObj(o.mlp))
       return { valid: false, reason: "mlp not an object" };
@@ -2721,6 +2727,26 @@ function snapshot() {
   const ch = evolve.champion;
   const ledN = (evolve.ledger || []).filter((e) => isNum(e && (e.score !== undefined ? e.score : e.best))).length;
   const evidence = Math.max(ch.runs || 0, Math.min(ledN, 999));
+  const lean = {
+    version: evolve.version,
+    champion: {
+      g: ch.g,
+      hash: ch.hash,
+      edition: ch.edition || "",
+      best: ch.best || 0,
+      runs: ch.runs || 0,
+      total: ch.total || 0,
+      mean: isNum(ch.mean) ? ch.mean : ch.best || 0
+    },
+    challenger: null,
+    ledger: [],
+    population: [],
+    inProgress: null,
+    generation: evolve.generation || 0,
+    episodes: evolve.episodes || 0,
+    knowledge: evolve.knowledge || {},
+    bestEver: evolve.bestEver || 0
+  };
   const snap = {
     v: SCHEMA,
     score: q,
@@ -2728,7 +2754,7 @@ function snapshot() {
     runs: evidence,
     edition: ch.edition || "",
     at: Date.now(),
-    evolve,
+    evolve: lean,
     mlp: get("dino-mlp-v1"),
     knn: get("dino-knn-v1")
   };
@@ -2839,8 +2865,6 @@ function onAdopt(fn) {
     reloadHook = fn;
 }
 var lastSyncedQuality = null;
-var lastSyncAt = 0;
-var SYNC_FLOOR_MS = 15000;
 async function syncNow(log) {
   if (!cfg().enabled)
     return { ok: false, why: "not configured" };
@@ -2850,10 +2874,6 @@ async function syncNow(log) {
     return { ok: false, why: "nothing publishable" };
   if (q === lastSyncedQuality)
     return { ok: false, why: "unchanged" };
-  const now = Date.now();
-  if (now - lastSyncAt < SYNC_FLOOR_MS)
-    return { ok: false, why: "throttled" };
-  lastSyncAt = now;
   try {
     const res = await pushIfBetter();
     if (res.ok) {
@@ -2882,12 +2902,8 @@ async function syncNow(log) {
 function installAutoPush(log) {
   if (!cfg().enabled)
     return false;
-  let lastAt = 0;
   let warnedUnpublishable = false;
   const fire = () => {
-    const now = Date.now();
-    if (now - lastAt < 30000)
-      return;
     const local = snapshot();
     if (!local) {
       if (log && !warnedUnpublishable) {
@@ -2900,7 +2916,6 @@ function installAutoPush(log) {
       }
       return;
     }
-    lastAt = now;
     const { url, token } = cfg();
     try {
       fetch(url, {

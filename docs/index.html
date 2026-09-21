@@ -2743,6 +2743,7 @@ function snapshot() {
     challenger: null,
     ledger: [],
     population: [],
+    history: [],
     inProgress: null,
     generation: evolve.generation || 0,
     episodes: evolve.episodes || 0,
@@ -3546,6 +3547,12 @@ function migrate(S2) {
     return g ? { ...c, g } : null;
   }).filter(Boolean);
   S2.population = fix(S2.population);
+  if (!Array.isArray(S2.history))
+    S2.history = [];
+  if (!Array.isArray(S2.ledger))
+    S2.ledger = [];
+  if (!Array.isArray(S2.population))
+    S2.population = [];
   S2.inProgress = S2.inProgress ? fix(S2.inProgress) : null;
   if (S2.bestGenome)
     S2.bestGenome = migrateGenome(S2.bestGenome);
@@ -4470,7 +4477,7 @@ function drawChart() {
     return;
   const ctx = c.getContext("2d");
   ctx.clearRect(0, 0, c.width, c.height);
-  const h = S3.history;
+  const h = Array.isArray(S3.history) ? S3.history : [];
   if (!h.length) {
     const S22 = currentState();
     const done = S22.episodes || 0;

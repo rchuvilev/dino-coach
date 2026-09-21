@@ -570,7 +570,8 @@ function drawChart() {
   if (!c) return;
   const ctx = c.getContext("2d");
   ctx.clearRect(0, 0, c.width, c.height);
-  const h = S.history;
+  // Defensive: a state adopted from the pool may carry no history at all.
+  const h = Array.isArray(S.history) ? S.history : [];
   if (!h.length) {
     const S2 = currentState();
     const done = S2.episodes || 0;

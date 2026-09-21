@@ -323,3 +323,37 @@ describe("local corruption cannot block the pool forever", () => {
     expect(share.quality({ champion: { mean: 1900, best: 2287, runs: 4 }, ledger: [] })).toBe(1900);
   });
 });
+
+describe("an adopted snapshot must not crash the page", () => {
+  test("REGRESSION: the published payload carries every array the UI reads", () => {
+    // Live crash: "Cannot read properties of undefined (reading 'length')"
+    // at drawChart -> S.history.length. The lean payload stripped history,
+    // and because drawChart() runs at MODULE SCOPE the throw killed every
+    // statement after it - including the startup shared-best pull, which is
+    // why the pool appeared to never reach the client.
+    store.setItem("dino-evolve-v1", JSON.stringify({
+      version: 1,
+      champion: {
+        g: { loA: 25, loB: -1, widthA: 30, widthB: -1, duck: 30 },
+        hash: "h", edition: "e1", mean: 1400, best: 1600, runs: 4,
+      },
+      ledger: [], history: [], population: [],
+    }));
+    const snap = share.snapshot();
+    expect(snap).not.toBeNull();
+    for (const k of ["ledger", "population", "history"]) {
+      expect(Array.isArray((snap!.evolve as any)[k])).toBe(true);
+    }
+    expect(snap!.evolve.inProgress).toBeNull();
+  });
+
+  test("a payload that omits history still installs without throwing", () => {
+    const remote = goodPayload();
+    delete (remote.evolve as any).history;
+    const res = share.install(remote);
+    expect(res.ok).toBe(true);
+    const stored = JSON.parse(store.getItem("dino-evolve-v1")!);
+    // install stores what it was given; evolve.js migration repairs the shape
+    expect(stored.champion.edition).toBe("ab12cd");
+  });
+});

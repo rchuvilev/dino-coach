@@ -337,6 +337,14 @@ function migrate(S) {
       })
       .filter(Boolean);
   S.population = fix(S.population);
+  // An adopted shared-best snapshot deliberately omits this browser's search
+  // history, so a state arriving from the pool can lack these arrays
+  // entirely. drawChart() reads S.history.length and closeGeneration() calls
+  // S.history.push - both crash on undefined, and the crash happened at
+  // module scope, killing every line after it including the startup pull.
+  if (!Array.isArray(S.history)) S.history = [];
+  if (!Array.isArray(S.ledger)) S.ledger = [];
+  if (!Array.isArray(S.population)) S.population = [];
   S.inProgress = S.inProgress ? fix(S.inProgress) : null;
   if (S.bestGenome) S.bestGenome = migrateGenome(S.bestGenome);
   return S;

@@ -198,6 +198,7 @@ export function snapshot() {
     challenger: null,
     ledger: [],
     population: [],
+    history: [],
     inProgress: null,
     generation: evolve.generation || 0,
     episodes: evolve.episodes || 0,

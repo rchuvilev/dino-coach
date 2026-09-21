@@ -1062,6 +1062,13 @@ function frame() {
         );
       });
       tableDirty = true;
+      // SYNC AT EPISODE END. Measured: 16-20 episodes/min at max rate, so a
+      // blind write per run would be ~20 network writes a minute for no
+      // benefit - the champion is unchanged by most runs. share.syncNow()
+      // therefore compares the publishable quality against what it last
+      // sent and does nothing when it has not moved, which makes the common
+      // case free and the interesting case immediate.
+      share.syncNow(log);
 
       // Drive on cand.runs, which PERSISTS, not on epInCand which resets on
       // reload - that mismatch let candidates reach 28 runs against a budget
@@ -1514,7 +1521,19 @@ loadKnn();
   } catch {
     /* never block startup on the network */
   }
-  try { share.installAutoPush(log); } catch { /* ignore */ }
+  try {
+    // When a mid-run sync adopts a better pooled model, load it into the
+    // live engines immediately - otherwise it sits in localStorage while
+    // the old genome keeps playing, which looks exactly like a working sync.
+    share.onAdopt(() => {
+      reloadFromStorage();
+      loadAnalysis();
+      loadMlp();
+      loadKnn();
+      renderTable();
+    });
+    share.installAutoPush(log);
+  } catch { /* ignore */ }
 })();
 
 const saveBtn = $("save");

@@ -183,3 +183,47 @@ describe("snapshot refuses to publish junk", () => {
     expect(share.validate(JSON.parse(JSON.stringify(snap))).valid).toBe(true);
   });
 });
+
+describe("quality accepts corroborated champions (measured: 96% never reach 3 runs)", () => {
+  test("a fresh champion with a scored ledger IS publishable", () => {
+    // Measured on a real run: only 2 of 53 editions ever reached runs>=3,
+    // because `runs` resets to 1 on promotion. Gating on the current streak
+    // alone blocked ~96% of publishing and left the pool empty.
+    const q = share.quality({
+      champion: { mean: 1400, best: 1600, runs: 1 },
+      // real ledger rows carry `best`, not `score` - a fixture with the
+      // wrong field name passed while the production filter matched 0 rows
+      ledger: [
+        { hash: "a", edition: "a", best: 900, runs: 1 },
+        { hash: "b", edition: "b", best: 1100, runs: 2 },
+        { hash: "c", edition: "c", best: 1400, runs: 1 },
+      ],
+    });
+    expect(q).toBe(1400);
+  });
+
+  test("REGRESSION: a champion with NO corroboration is still refused", () => {
+    expect(share.quality({ champion: { mean: 5000, best: 5000, runs: 1 }, ledger: [] })).toBeNull();
+  });
+
+  test("REGRESSION: a thin ledger does not corroborate", () => {
+    const q = share.quality({
+      champion: { mean: 5000, best: 5000, runs: 1 },
+      ledger: [{ hash: "a", best: 10 }, { hash: "b", best: 20 }],
+    });
+    expect(q).toBeNull();
+  });
+
+  test("REGRESSION: ledger entries without a score do not count", () => {
+    // Guards against padding the ledger with unscored rows to force a publish.
+    const q = share.quality({
+      champion: { mean: 5000, best: 5000, runs: 1 },
+      ledger: [{ edition: "a" }, { edition: "b" }, { edition: "c" }],
+    });
+    expect(q).toBeNull();
+  });
+
+  test("a zero or negative mean is never publishable", () => {
+    expect(share.quality({ champion: { mean: 0, runs: 9 }, ledger: [] })).toBeNull();
+  });
+});

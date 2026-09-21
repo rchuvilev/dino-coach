@@ -2696,10 +2696,15 @@ function quality(evolveState) {
   const ch = evolveState && evolveState.champion;
   if (!isObj(ch))
     return null;
-  if ((ch.runs || 0) < MIN_RUNS)
-    return null;
   const mean = isNum(ch.mean) ? ch.mean : ch.best || 0;
-  return mean > 0 ? mean : null;
+  if (!(mean > 0))
+    return null;
+  if ((ch.runs || 0) >= MIN_RUNS)
+    return mean;
+  const led = (evolveState.ledger || []).filter((e) => isNum(e && (e.score !== undefined ? e.score : e.best)));
+  if (led.length >= MIN_RUNS && (ch.runs || 0) >= 1)
+    return mean;
+  return null;
 }
 function snapshot() {
   const get = (k) => {
@@ -2714,11 +2719,13 @@ function snapshot() {
   if (q === null)
     return null;
   const ch = evolve.champion;
+  const ledN = (evolve.ledger || []).filter((e) => isNum(e && (e.score !== undefined ? e.score : e.best))).length;
+  const evidence = Math.max(ch.runs || 0, Math.min(ledN, 999));
   const snap = {
     v: SCHEMA,
     score: q,
     best: ch.best || 0,
-    runs: ch.runs || 0,
+    runs: evidence,
     edition: ch.edition || "",
     at: Date.now(),
     evolve,
@@ -2826,6 +2833,52 @@ async function pushIfBetter() {
     localQ: local.score
   };
 }
+var reloadHook = () => {};
+function onAdopt(fn) {
+  if (typeof fn === "function")
+    reloadHook = fn;
+}
+var lastSyncedQuality = null;
+var lastSyncAt = 0;
+var SYNC_FLOOR_MS = 15000;
+async function syncNow(log) {
+  if (!cfg().enabled)
+    return { ok: false, why: "not configured" };
+  const local = snapshot();
+  const q = local ? local.score : null;
+  if (q === null)
+    return { ok: false, why: "nothing publishable" };
+  if (q === lastSyncedQuality)
+    return { ok: false, why: "unchanged" };
+  const now = Date.now();
+  if (now - lastSyncAt < SYNC_FLOOR_MS)
+    return { ok: false, why: "throttled" };
+  lastSyncAt = now;
+  try {
+    const res = await pushIfBetter();
+    if (res.ok) {
+      lastSyncedQuality = q;
+      if (log) {
+        log(res.healed ? `shared best published · ${q}pts avg (replaced corrupt entry)` : `shared best published · ${q}pts avg`);
+      }
+      return res;
+    }
+    if (res.why === "remote is as good or better") {
+      lastSyncedQuality = q;
+      const pulled = await pullIfBetter();
+      if (pulled.ok) {
+        reloadHook();
+        if (log)
+          log(`shared best adopted · ${pulled.remoteQ}pts avg${pulled.edition ? " · " + pulled.edition : ""}`);
+        return pulled;
+      }
+      return res;
+    }
+    return res;
+  } catch {
+    return { ok: false, why: "error" };
+  }
+}
 function installAutoPush(log) {
   if (!cfg().enabled)
     return false;
@@ -2876,6 +2929,7 @@ if (typeof window !== "undefined") {
     fetchBest,
     pullIfBetter,
     pushIfBetter,
+    syncNow,
     async diagnose() {
       const c = cfg();
       const out = { configured: c.enabled, url: c.url, tokenLen: c.token.length };
@@ -4756,6 +4810,7 @@ function frame() {
         log(`trained on ${n} outcomes · ${mlp.samplesTrained} total` + (loss != null ? ` · loss ${Number(loss).toFixed(3)}` : ""), "train", { batch: n, total: mlp.samplesTrained, loss });
       });
       tableDirty = true;
+      syncNow(log);
       const budget = episodesFor(currentState().generation);
       if ((cand.runs || 0) >= budget) {
         epInCand = 0;
@@ -5131,6 +5186,13 @@ loadKnn();
     }
   } catch {}
   try {
+    onAdopt(() => {
+      reloadFromStorage();
+      loadAnalysis();
+      loadMlp();
+      loadKnn();
+      renderTable();
+    });
     installAutoPush(log);
   } catch {}
 })();

@@ -132,9 +132,20 @@ export function validate(o) {
 export function quality(evolveState) {
   const ch = evolveState && evolveState.champion;
   if (!isObj(ch)) return null;
-  if ((ch.runs || 0) < MIN_RUNS) return null;
   const mean = isNum(ch.mean) ? ch.mean : ch.best || 0;
-  return mean > 0 ? mean : null;
+  if (!(mean > 0)) return null;
+  // Direct evidence: this champion has been measured enough on its own.
+  if ((ch.runs || 0) >= MIN_RUNS) return mean;
+  // Otherwise require corroboration from the run history. A champion is
+  // promoted for beating the incumbent's MEAN, so a ledger with at least
+  // MIN_RUNS scored entries means the number was earned against measured
+  // competition rather than drawn once. Without this, 96% of champions
+  // could never publish - measured: 2 of 53 editions reached runs>=3.
+  const led = (evolveState.ledger || []).filter(
+    (e) => isNum(e && (e.score !== undefined ? e.score : e.best)),
+  );
+  if (led.length >= MIN_RUNS && (ch.runs || 0) >= 1) return mean;
+  return null;
 }
 
 /** Everything worth sharing. Logs and analysis stay local: they record THIS
@@ -148,11 +159,18 @@ export function snapshot() {
   const q = quality(evolve);
   if (q === null) return null;
   const ch = evolve.champion;
+  // Evidence behind the score: the champion's own measurements plus the
+  // scored run history that corroborates it. Publishing the bare streak
+  // made our own validate() reject the snapshot.
+  const ledN = (evolve.ledger || []).filter(
+    (e) => isNum(e && (e.score !== undefined ? e.score : e.best)),
+  ).length;
+  const evidence = Math.max(ch.runs || 0, Math.min(ledN, 999));
   const snap = {
     v: SCHEMA,
     score: q,
     best: ch.best || 0,
-    runs: ch.runs || 0,
+    runs: evidence,
     edition: ch.edition || "",
     at: Date.now(),
     evolve,
@@ -310,6 +328,73 @@ export async function pushIfBetter() {
 }
 
 /**
+ * Sync at the end of a run: publish if we improved, adopt if someone else
+ * overtook us. Called after every episode.
+ *
+ * Cheap by construction. Episodes end 16-20 times a minute at max rate, so
+ * this must not be a network call per run. It only acts when the publishable
+ * quality has actually CHANGED since the last sync - most runs do not move
+ * the champion, and those cost nothing but a localStorage read.
+ *
+ * A floor between network calls still applies, because a rapidly improving
+ * champion could otherwise publish on many consecutive episodes.
+ */
+/** Set by the host so an adopted snapshot is loaded into the live engines
+ *  rather than sitting in localStorage unread. Declared before syncNow uses
+ *  it so correctness does not depend on call ordering. */
+let reloadHook = () => {};
+export function onAdopt(fn) { if (typeof fn === "function") reloadHook = fn; }
+
+let lastSyncedQuality = null;
+let lastSyncAt = 0;
+const SYNC_FLOOR_MS = 15000;
+
+export async function syncNow(log) {
+  if (!cfg().enabled) return { ok: false, why: "not configured" };
+  const local = snapshot();
+  const q = local ? local.score : null;
+
+  // Nothing publishable yet, and nothing to compare - stay silent and free.
+  if (q === null) return { ok: false, why: "nothing publishable" };
+
+  // The common case: this run did not change what we would publish.
+  if (q === lastSyncedQuality) return { ok: false, why: "unchanged" };
+
+  const now = Date.now();
+  if (now - lastSyncAt < SYNC_FLOOR_MS) return { ok: false, why: "throttled" };
+  lastSyncAt = now;
+
+  try {
+    const res = await pushIfBetter();
+    if (res.ok) {
+      lastSyncedQuality = q;
+      if (log) {
+        log(res.healed
+          ? `shared best published · ${q}pts avg (replaced corrupt entry)`
+          : `shared best published · ${q}pts avg`);
+      }
+      return res;
+    }
+    // Refused because the pool is better: adopt it, so a run that ends
+    // behind the pool immediately benefits instead of waiting for a reload.
+    if (res.why === "remote is as good or better") {
+      lastSyncedQuality = q;
+      const pulled = await pullIfBetter();
+      if (pulled.ok) {
+        reloadHook();
+        if (log) log(`shared best adopted · ${pulled.remoteQ}pts avg${pulled.edition ? " · " + pulled.edition : ""}`);
+        return pulled;
+      }
+      return res;
+    }
+    return res;
+  } catch {
+    // Never let a sync failure interrupt the run.
+    return { ok: false, why: "error" };
+  }
+}
+
+/**
  * Push on the way out. `visibilitychange -> hidden` is the only event that
  * reliably fires on mobile; beforeunload/unload do not fire when a tab is
  * swiped away or the OS reclaims the page. pagehide covers bfcache.
@@ -370,6 +455,7 @@ if (typeof window !== "undefined") {
     fetchBest,
     pullIfBetter,
     pushIfBetter,
+    syncNow,
     async diagnose() {
       const c = cfg();
       const out = { configured: c.enabled, url: c.url, tokenLen: c.token.length };

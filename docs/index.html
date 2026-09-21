@@ -675,7 +675,22 @@ var isEmbed = (typeof window !== 'undefined' && (window.isEmbed === true || (win
     var FPS = 60;
     var IS_HIDPI = window.devicePixelRatio > 1;
     var IS_IOS = window.navigator.userAgent.indexOf('CriOS') > -1 || window.navigator.userAgent == 'UIWebViewForStaticFileContent';
-    var IS_MOBILE = window.navigator.userAgent.indexOf('Mobi') > -1 || IS_IOS;
+    // Patched: UA sniffing for 'Mobi' misses iPadOS (which reports a Mac UA),
+    // desktop Chrome in device-emulation, and any browser that trims the UA.
+    // It also silently changes gameplay - IS_MOBILE selects yPosMobile for
+    // obstacles - so a wrong answer moves bird altitudes, not just controls.
+    // Detect the CAPABILITY that actually matters (touch input) plus a
+    // narrow viewport, and keep the UA test as one more signal.
+    var IS_MOBILE = (function () {
+      var ua = window.navigator.userAgent.indexOf('Mobi') > -1 || IS_IOS;
+      var touch = (('ontouchstart' in window) ||
+                   (navigator.maxTouchPoints || 0) > 0);
+      var coarse = !!(window.matchMedia &&
+                      window.matchMedia('(pointer: coarse)').matches);
+      var narrow = Math.min(window.innerWidth || 9999,
+                            window.screen ? window.screen.width : 9999) <= 820;
+      return ua || ((touch || coarse) && narrow);
+    })();
     var IS_TOUCH_ENABLED = 'ontouchstart' in window;
     Runner.config = {
         ACCELERATION: 0.001,
@@ -4143,7 +4158,7 @@ function act(a) {
       return;
     jumpLatched = true;
     const wasJumping = false;
-    jumpStartX = r.tRex.xPos;
+    jumpStartX = r.tRex.xPos + (r.tRex.config && r.tRex.config.WIDTH || 44);
     jumpStartY = r.tRex.yPos;
     r.onKeyDown(ev(38, "keydown"));
     r.onKeyUp(ev(38, "keyup"));
@@ -4438,7 +4453,12 @@ function overlay(s, g) {
   const ox0 = cr.left - wr.left;
   const oy0 = cr.top - wr.top;
   const SPRITE_DY = 2;
-  const OBSTACLE_DY = 8;
+  const obstacleInset = (o) => {
+    const t = o.typeConfig && o.typeConfig.type || "";
+    if (t === "PTERODACTYL")
+      return { dx: -1, dy: 8, h: 22 };
+    return { dx: 1, dy: 1, h: o.typeConfig && o.typeConfig.height || 35 };
+  };
   const DINO_H = 35;
   const groundCSS = (r.dimensions && r.dimensions.HEIGHT || 150) * (131 / 150);
   const top = oy0;
@@ -4509,7 +4529,7 @@ function overlay(s, g) {
         break;
     }
     if (pts.length > 2) {
-      const bx = ox0 + r.tRex.xPos * scale;
+      const bx = ox0 + (r.tRex.xPos + (r.tRex.config && r.tRex.config.WIDTH || 44)) * scale;
       const hw = 0;
       ctx.strokeStyle = "rgba(80,160,255,.9)";
       ctx.lineWidth = 2;
@@ -4548,8 +4568,9 @@ function overlay(s, g) {
     let hit = null, bestArea = 0;
     for (const o of r.horizon && r.horizon.obstacles || []) {
       const oL = o.xPos, oR = oL + (o.width || 10);
-      const oT = (o.yPos || 0) + OBSTACLE_DY;
-      const oB = oT + (o.typeConfig && o.typeConfig.height || 35);
+      const oi = obstacleInset(o);
+      const oT = (o.yPos || 0) + oi.dy;
+      const oB = oT + oi.h;
       const iw = Math.min(dR, oR) - Math.max(dL, oL);
       const ih = Math.min(dB, oB) - Math.max(dT, oT);
       const area = iw > 0 && ih > 0 ? iw * ih : 0;
@@ -4579,10 +4600,11 @@ function overlay(s, g) {
     const d = o.xPos - tx;
     if (d < -40 || d > 400)
       continue;
-    const ox = ox0 + o.xPos * scale;
+    const ins = obstacleInset(o);
+    const ox = ox0 + (o.xPos + ins.dx) * scale;
     const ow = Math.max(3, (o.width || 10) * scale);
-    const oh = Math.max(3, (o.typeConfig && o.typeConfig.height || 35) * scale);
-    const oy = oy0 + ((o.yPos || 0) + OBSTACLE_DY) * scale;
+    const oh = Math.max(3, ins.h * scale);
+    const oy = oy0 + ((o.yPos || 0) + ins.dy) * scale;
     ctx.fillStyle = "rgba(255,120,120,.22)";
     ctx.fillRect(ox, oy, ow, oh);
     ctx.strokeStyle = "rgba(255,120,120,.95)";

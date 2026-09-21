@@ -272,7 +272,7 @@ function act(a) {
     // jump-start line. Captured at the takeoff frame because tRex.xPos is
     // constant during play - the world moves, not the dino - so it cannot
     // be recovered afterwards.
-    jumpStartX = r.tRex.xPos;
+    jumpStartX = r.tRex.xPos + ((r.tRex.config && r.tRex.config.WIDTH) || 44);
     jumpStartY = r.tRex.yPos;
     r.onKeyDown(ev(38, "keydown"));
     r.onKeyUp(ev(38, "keyup"));
@@ -670,9 +670,16 @@ function overlay(s, g) {
   // Sprites are drawn 2px below their reported yPos (constant offset,
   // verified over 6 airborne samples with zero variance).
   const SPRITE_DY = 2;
-  // Obstacles render 8px below their reported yPos (measured: PTERODACTYL
-  // yPos 50 -> sprite band top at CSS 58).
-  const OBSTACLE_DY = 8;
+  // Sprite insets MEASURED per obstacle type - a single constant cannot fit
+  // both. Cactus ink fills its box (top = yPos+1); the pterodactyl sprite
+  // carries transparent padding, so its ink starts 8px down and is only 22px
+  // tall inside a 40px box. Using 8 for everything drew every cactus box 7px
+  // too low, which is the "shifted down" that was reported.
+  const obstacleInset = (o) => {
+    const t = (o.typeConfig && o.typeConfig.type) || "";
+    if (t === "PTERODACTYL") return { dx: -1, dy: 8, h: 22 };
+    return { dx: 1, dy: 1, h: (o.typeConfig && o.typeConfig.height) || 35 };
+  };
   // config.HEIGHT (47) is the sprite-sheet CELL height; the dino's visible
   // hull is 35px (measured: top CSS 95, bottom CSS 130 on a grounded frame).
   // Using 47 drew the box 12px through the ground.
@@ -768,7 +775,7 @@ function overlay(s, g) {
       if (y >= ground) break;
     }
     if (pts.length > 2) {
-      const bx = ox0 + r.tRex.xPos * scale;
+      const bx = ox0 + (r.tRex.xPos + ((r.tRex.config && r.tRex.config.WIDTH) || 44)) * scale;
       const hw = 0;
       ctx.strokeStyle = "rgba(80,160,255,.9)";
       ctx.lineWidth = 2;
@@ -823,8 +830,9 @@ function overlay(s, g) {
     let hit = null, bestArea = 0;
     for (const o of (r.horizon && r.horizon.obstacles) || []) {
       const oL = o.xPos, oR = oL + (o.width || 10);
-      const oT = (o.yPos || 0) + OBSTACLE_DY;
-      const oB = oT + ((o.typeConfig && o.typeConfig.height) || 35);
+      const oi = obstacleInset(o);
+      const oT = (o.yPos || 0) + oi.dy;
+      const oB = oT + oi.h;
       const iw = Math.min(dR, oR) - Math.max(dL, oL);
       const ih = Math.min(dB, oB) - Math.max(dT, oT);
       // Overlapping boxes are the real hit. If nothing overlaps (the game
@@ -860,10 +868,11 @@ function overlay(s, g) {
     // Draw at the obstacle's OWN xPos. The old form added the dino's xPos
     // plus a hardcoded 44 on top of the gap, which shifted every box
     // forward by roughly a dino width.
-    const ox = ox0 + o.xPos * scale;
+    const ins = obstacleInset(o);
+    const ox = ox0 + (o.xPos + ins.dx) * scale;
     const ow = Math.max(3, (o.width || 10) * scale);
-    const oh = Math.max(3, ((o.typeConfig && o.typeConfig.height) || 35) * scale);
-    const oy = oy0 + ((o.yPos || 0) + OBSTACLE_DY) * scale;
+    const oh = Math.max(3, ins.h * scale);
+    const oy = oy0 + ((o.yPos || 0) + ins.dy) * scale;
     ctx.fillStyle = "rgba(255,120,120,.22)";
     ctx.fillRect(ox, oy, ow, oh);
     ctx.strokeStyle = "rgba(255,120,120,.95)";

@@ -1,6 +1,30 @@
 --- game.orig.js
 +++ game.js
-@@ -274,9 +274,16 @@
+@@ -91,7 +91,22 @@
+     var FPS = 60;
+     var IS_HIDPI = window.devicePixelRatio > 1;
+     var IS_IOS = window.navigator.userAgent.indexOf('CriOS') > -1 || window.navigator.userAgent == 'UIWebViewForStaticFileContent';
+-    var IS_MOBILE = window.navigator.userAgent.indexOf('Mobi') > -1 || IS_IOS;
++    // Patched: UA sniffing for 'Mobi' misses iPadOS (which reports a Mac UA),
++    // desktop Chrome in device-emulation, and any browser that trims the UA.
++    // It also silently changes gameplay - IS_MOBILE selects yPosMobile for
++    // obstacles - so a wrong answer moves bird altitudes, not just controls.
++    // Detect the CAPABILITY that actually matters (touch input) plus a
++    // narrow viewport, and keep the UA test as one more signal.
++    var IS_MOBILE = (function () {
++      var ua = window.navigator.userAgent.indexOf('Mobi') > -1 || IS_IOS;
++      var touch = (('ontouchstart' in window) ||
++                   (navigator.maxTouchPoints || 0) > 0);
++      var coarse = !!(window.matchMedia &&
++                      window.matchMedia('(pointer: coarse)').matches);
++      var narrow = Math.min(window.innerWidth || 9999,
++                            window.screen ? window.screen.width : 9999) <= 820;
++      return ua || ((touch || coarse) && narrow);
++    })();
+     var IS_TOUCH_ENABLED = 'ontouchstart' in window;
+     Runner.config = {
+         ACCELERATION: 0.001,
+@@ -274,9 +289,16 @@
              this.init()
          },
          loadSounds: function() {
@@ -18,7 +42,7 @@
                  for (var sound in Runner.sounds) {
                      var soundSrc = resourceTemplate.getElementById(Runner.sounds[sound]).src;
                      soundSrc = soundSrc.substr(soundSrc.indexOf(',') + 1);
-@@ -653,7 +660,9 @@
+@@ -653,7 +675,9 @@
          raq: function() {
              if (!this.drawPending) {
                  this.drawPending = true;
@@ -29,7 +53,7 @@
              }
          },
          isRunning: function() {
-@@ -907,8 +916,15 @@
+@@ -907,8 +931,15 @@
      }
  
      function getTimeStamp() {
@@ -47,7 +71,7 @@
      }
  
      function GameOverPanel(canvas, textImgPos, restartImgPos, dimensions) {
-@@ -1442,6 +1458,9 @@
+@@ -1442,6 +1473,9 @@
          update: function(deltaTime, distance) {
              var paint = true;
              var playSound = false;
@@ -57,7 +81,7 @@
              if (!this.acheivement) {
                  distance = this.getActualDistance(distance);
                  if (distance > this.maxScore && this.maxScoreUnits == this.config.MAX_DISTANCE_UNITS) {
-@@ -1481,6 +1500,31 @@
+@@ -1481,6 +1515,31 @@
                      this.draw(i, parseInt(this.digits[i]))
                  }
              }
@@ -89,7 +113,7 @@
              this.drawHighScore();
              return playSound
          },
-@@ -1494,8 +1538,20 @@
+@@ -1494,8 +1553,20 @@
          },
          setHighScore: function(distance) {
              distance = this.getActualDistance(distance);

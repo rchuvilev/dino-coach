@@ -196,7 +196,20 @@ export function snapshot() {
       mean: isNum(ch.mean) ? ch.mean : ch.best || 0,
     },
     challenger: null,
-    ledger: [],
+    // The champion's OWN ledger row travels with it. Dropping the whole
+    // ledger also dropped this, so the receiving client displayed the
+    // adopted champion as a fresh 1-run candidate and rebuilt its stats
+    // from zero. One row is not "history" - it is the champion's identity.
+    ledger: [{
+      hash: ch.hash,
+      edition: ch.edition || "",
+      best: ch.best || 0,
+      runs: ch.runs || 0,
+      promoted: true,
+      last: Date.now(),
+      seq: evolve.episodes || 0,
+      fromPool: true,
+    }],
     population: [],
     history: [],
     inProgress: null,
@@ -274,7 +287,22 @@ export function install(remote) {
     // Clear everything we own first, so a key absent from the remote cannot
     // survive as a leftover from the previous occupant.
     for (const k of OWNED) localStorage.removeItem(k);
-    localStorage.setItem("dino-evolve-v1", JSON.stringify(remote.evolve));
+    // Mark the champion as imported and clear any locally-observed stats,
+    // so evolve.js re-measures it on THIS machine before trusting its mean
+    // as the bar every challenger must clear.
+    const adopted = remote.evolve && remote.evolve.champion
+      ? {
+          ...remote.evolve,
+          champion: {
+            ...remote.evolve.champion,
+            fromPool: true,
+            localRuns: 0,
+            localTotal: 0,
+            localMean: 0,
+          },
+        }
+      : remote.evolve;
+    localStorage.setItem("dino-evolve-v1", JSON.stringify(adopted));
     if (remote.mlp) localStorage.setItem("dino-mlp-v1", JSON.stringify(remote.mlp));
     if (remote.knn) localStorage.setItem("dino-knn-v1", JSON.stringify(remote.knn));
     return { ok: true, replaced: OWNED.length };

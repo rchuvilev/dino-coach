@@ -2741,7 +2741,16 @@ function snapshot() {
       mean: isNum(ch.mean) ? ch.mean : ch.best || 0
     },
     challenger: null,
-    ledger: [],
+    ledger: [{
+      hash: ch.hash,
+      edition: ch.edition || "",
+      best: ch.best || 0,
+      runs: ch.runs || 0,
+      promoted: true,
+      last: Date.now(),
+      seq: evolve.episodes || 0,
+      fromPool: true
+    }],
     population: [],
     history: [],
     inProgress: null,
@@ -2805,7 +2814,17 @@ function install(remote) {
   try {
     for (const k of OWNED)
       localStorage.removeItem(k);
-    localStorage.setItem("dino-evolve-v1", JSON.stringify(remote.evolve));
+    const adopted = remote.evolve && remote.evolve.champion ? {
+      ...remote.evolve,
+      champion: {
+        ...remote.evolve.champion,
+        fromPool: true,
+        localRuns: 0,
+        localTotal: 0,
+        localMean: 0
+      }
+    } : remote.evolve;
+    localStorage.setItem("dino-evolve-v1", JSON.stringify(adopted));
     if (remote.mlp)
       localStorage.setItem("dino-mlp-v1", JSON.stringify(remote.mlp));
     if (remote.knn)
@@ -3656,6 +3675,9 @@ function judgeRun(role, score) {
     S2.champion.runs++;
     S2.champion.total = (S2.champion.total || 0) + score;
     S2.champion.mean = Math.round(S2.champion.total / S2.champion.runs);
+    S2.champion.localRuns = (S2.champion.localRuns || 0) + 1;
+    S2.champion.localTotal = (S2.champion.localTotal || 0) + score;
+    S2.champion.localMean = Math.round(S2.champion.localTotal / S2.champion.localRuns);
     if (score > (S2.champion.best || 0))
       S2.champion.best = score;
     ledgerRecord(S2.champion.hash, S2.champion.edition || "", score, false);
@@ -3665,7 +3687,8 @@ function judgeRun(role, score) {
   const ch = S2.challenger;
   if (!ch)
     return { promoted: false, champion: S2.champion, result: score };
-  const bar = (S2.champion.runs || 0) >= 2 ? S2.champion.mean || 0 : S2.champion.best || 0;
+  const imported = !!S2.champion.fromPool && (S2.champion.localRuns || 0) < 2;
+  const bar = imported ? S2.champion.localMean || 0 : (S2.champion.runs || 0) >= 2 ? S2.champion.mean || 0 : S2.champion.best || 0;
   const beat = score > bar;
   ledgerRecord(ch.hash, ch.edition, score, beat);
   if (beat) {

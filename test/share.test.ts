@@ -284,8 +284,15 @@ describe("the pool carries the champion only", () => {
     expect(snap).not.toBeNull();
     expect(snap!.score).toBe(1800);
     expect(snap!.evolve.champion.edition).toBe("win001");
-    // history is stripped
-    expect(snap!.evolve.ledger).toEqual([]);
+    // Search history is stripped, but the champion's OWN row travels with
+    // it: without that row a receiving client displayed the adopted
+    // champion as a fresh 1-run candidate (runs 1 / best 571) while the
+    // champion object said runs 8 / best 2900.
+    expect(snap!.evolve.ledger).toHaveLength(1);
+    expect(snap!.evolve.ledger[0].edition).toBe("win001");
+    expect(snap!.evolve.ledger[0].best).toBe(2100);
+    expect(snap!.evolve.ledger[0].runs).toBe(4);
+    expect(snap!.evolve.ledger[0].fromPool).toBe(true);
     expect(snap!.evolve.population).toEqual([]);
     expect(snap!.evolve.inProgress).toBeNull();
     // but transferable per-situation knowledge rides along
@@ -355,5 +362,23 @@ describe("an adopted snapshot must not crash the page", () => {
     const stored = JSON.parse(store.getItem("dino-evolve-v1")!);
     // install stores what it was given; evolve.js migration repairs the shape
     expect(stored.champion.edition).toBe("ab12cd");
+  });
+});
+
+describe("an imported champion must earn its bar locally", () => {
+  test("REGRESSION: install marks the champion as fromPool with zero local stats", () => {
+    // Measured: an adopted champion imported mean 1625 earned on another
+    // machine with that machine's warm model. Locally the model restarts
+    // colder, so 24 episodes produced a best run of 1315 and NOTHING could
+    // ever beat the bar - the champion was undisplaceable and the pool
+    // edition name never changed.
+    const res = share.install(goodPayload());
+    expect(res.ok).toBe(true);
+    const stored = JSON.parse(store.getItem("dino-evolve-v1")!);
+    expect(stored.champion.fromPool).toBe(true);
+    expect(stored.champion.localRuns).toBe(0);
+    expect(stored.champion.localMean).toBe(0);
+    // the imported mean is preserved for display, just not trusted as the bar
+    expect(stored.champion.mean).toBe(1500);
   });
 });

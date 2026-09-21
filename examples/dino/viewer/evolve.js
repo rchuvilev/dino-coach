@@ -502,6 +502,11 @@ export function judgeRun(role, score) {
     S.champion.runs++;
     S.champion.total = (S.champion.total || 0) + score;
     S.champion.mean = Math.round(S.champion.total / S.champion.runs);
+    // Locally observed performance, kept separately so an imported mean
+    // cannot masquerade as a measurement made on this machine.
+    S.champion.localRuns = (S.champion.localRuns || 0) + 1;
+    S.champion.localTotal = (S.champion.localTotal || 0) + score;
+    S.champion.localMean = Math.round(S.champion.localTotal / S.champion.localRuns);
     if (score > (S.champion.best || 0)) S.champion.best = score;
     ledgerRecord(S.champion.hash, S.champion.edition || "", score, false);
     save(S);
@@ -512,9 +517,16 @@ export function judgeRun(role, score) {
   // Compare against TYPICAL performance, not the lucky record. Until the
   // champion has a couple of runs its mean is unreliable, so fall back to
   // the record for the first comparison only.
-  const bar = (S.champion.runs || 0) >= 2
-    ? (S.champion.mean || 0)
-    : (S.champion.best || 0);
+  // An imported champion has not been measured HERE yet. Until it has, use
+  // its locally observed mean rather than the imported one - otherwise a
+  // number earned on another machine (with that machine's warm model) is an
+  // unbeatable bar and the local search stalls permanently.
+  const imported = !!S.champion.fromPool && (S.champion.localRuns || 0) < 2;
+  const bar = imported
+    ? (S.champion.localMean || 0)
+    : (S.champion.runs || 0) >= 2
+      ? (S.champion.mean || 0)
+      : (S.champion.best || 0);
   const beat = score > bar;
   ledgerRecord(ch.hash, ch.edition, score, beat);
   if (beat) {

@@ -2865,15 +2865,37 @@ function onAdopt(fn) {
     reloadHook = fn;
 }
 var lastSyncedQuality = null;
+var sincePoolCheck = 0;
+var POOL_CHECK_EVERY = 5;
 async function syncNow(log) {
   if (!cfg().enabled)
     return { ok: false, why: "not configured" };
   const local = snapshot();
   const q = local ? local.score : null;
-  if (q === null)
-    return { ok: false, why: "nothing publishable" };
-  if (q === lastSyncedQuality)
+  if (q === null) {
+    const pulled = await pullIfBetter();
+    if (pulled.ok) {
+      reloadHook();
+      if (log)
+        log(`shared best adopted · ${pulled.remoteQ}pts avg${pulled.edition ? " · " + pulled.edition : ""}`);
+    }
+    return pulled;
+  }
+  if (q === lastSyncedQuality) {
+    sincePoolCheck++;
+    if (sincePoolCheck < POOL_CHECK_EVERY)
+      return { ok: false, why: "unchanged" };
+    sincePoolCheck = 0;
+    const pulled = await pullIfBetter();
+    if (pulled.ok) {
+      reloadHook();
+      lastSyncedQuality = null;
+      if (log)
+        log(`shared best adopted · ${pulled.remoteQ}pts avg${pulled.edition ? " · " + pulled.edition : ""}`);
+      return pulled;
+    }
     return { ok: false, why: "unchanged" };
+  }
   try {
     const res = await pushIfBetter();
     if (res.ok) {
@@ -4982,7 +5004,13 @@ function verifyLiveness() {
 pop = seedPopulation();
 renderTable();
 drawChart();
-$("run").onclick = () => {
+var sharedReady = null;
+$("run").onclick = async () => {
+  if (sharedReady) {
+    try {
+      await sharedReady;
+    } catch {}
+  }
   const v = verifyLiveness();
   $("liveness").textContent = `liveness: ${v.ok ? "OK" : "FAILED"} · ${v.why}`;
   $("liveness").className = "tag " + (v.ok ? "live" : "dead");
@@ -5182,7 +5210,7 @@ function loadKnn() {
   } catch {}
 }
 loadKnn();
-(async () => {
+sharedReady = (async () => {
   try {
     const r = await pullIfBetter();
     if (r && r.ok) {
@@ -5199,7 +5227,13 @@ loadKnn();
     } else if (r && r.why && r.why !== "not configured") {
       log(`shared best unavailable: ${r.why}${r.detail ? " (" + r.detail + ")" : ""}`);
     }
-  } catch {}
+  } catch (e) {
+    try {
+      log(`shared best startup failed: ${e && e.message || e}`);
+    } catch {}
+    if (typeof console !== "undefined")
+      console.error("[dino] shared startup", e);
+  }
   try {
     onAdopt(() => {
       reloadFromStorage();

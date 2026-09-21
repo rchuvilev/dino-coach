@@ -1249,7 +1249,14 @@ pop = seedPopulation();
 renderTable();
 drawChart();
 
-$("run").onclick = () => {
+/** Resolves when the startup shared-best pull has settled. The run path
+ *  awaits it so a run can never begin on a random genome while a pooled
+ *  champion is still in flight - measured, that race silently discarded an
+ *  adopted champion on every wiped profile. */
+let sharedReady = null;
+
+$("run").onclick = async () => {
+  if (sharedReady) { try { await sharedReady; } catch { /* offline is fine */ } }
   const v = verifyLiveness();
   $("liveness").textContent = `liveness: ${v.ok ? "OK" : "FAILED"} · ${v.why}`;
   $("liveness").className = "tag " + (v.ok ? "live" : "dead");
@@ -1501,7 +1508,7 @@ loadKnn();
  * Every failure path is non-fatal: the page must work offline, on a blocked
  * network, and with the share layer unconfigured.
  */
-(async () => {
+sharedReady = (async () => {
   try {
     const r = await share.pullIfBetter();
     if (r && r.ok) {
@@ -1518,8 +1525,11 @@ loadKnn();
     } else if (r && r.why && r.why !== "not configured") {
       log(`shared best unavailable: ${r.why}${r.detail ? " (" + r.detail + ")" : ""}`);
     }
-  } catch {
-    /* never block startup on the network */
+  } catch (e) {
+    // Never block startup on the network - but SAY so. A bare catch here
+    // hid a real startup failure while the same call worked on demand.
+    try { log(`shared best startup failed: ${(e && e.message) || e}`); } catch { /* ignore */ }
+    if (typeof console !== "undefined") console.error("[dino] shared startup", e);
   }
   try {
     // When a mid-run sync adopts a better pooled model, load it into the

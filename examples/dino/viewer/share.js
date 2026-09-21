@@ -382,17 +382,46 @@ let reloadHook = () => {};
 export function onAdopt(fn) { if (typeof fn === "function") reloadHook = fn; }
 
 let lastSyncedQuality = null;
+/** Episodes since we last asked the pool whether it overtook us. Checking
+ *  every episode would be a network call per run for no reason; never
+ *  checking means a better pooled model is invisible for a whole session. */
+let sincePoolCheck = 0;
+const POOL_CHECK_EVERY = 5;
 
 export async function syncNow(log) {
   if (!cfg().enabled) return { ok: false, why: "not configured" };
   const local = snapshot();
   const q = local ? local.score : null;
 
-  // Nothing publishable yet, and nothing to compare - stay silent and free.
-  if (q === null) return { ok: false, why: "nothing publishable" };
+  // 🔴 A client with nothing to publish must STILL pull. Returning early
+  // here meant a fresh visitor - exactly the one with most to gain - never
+  // saw the pool after the startup pull, and a pool that filled later was
+  // never picked up at all. Measured: the page logged "pool is empty" while
+  // diagnose() could read a 1900pt champion from the same endpoint.
+  if (q === null) {
+    const pulled = await pullIfBetter();
+    if (pulled.ok) {
+      reloadHook();
+      if (log) log(`shared best adopted · ${pulled.remoteQ}pts avg${pulled.edition ? " · " + pulled.edition : ""}`);
+    }
+    return pulled;
+  }
 
-  // The common case: this run did not change what we would publish.
-  if (q === lastSyncedQuality) return { ok: false, why: "unchanged" };
+  // Quality unchanged: still worth asking whether someone else overtook us,
+  // but only occasionally - this runs at the end of every episode.
+  if (q === lastSyncedQuality) {
+    sincePoolCheck++;
+    if (sincePoolCheck < POOL_CHECK_EVERY) return { ok: false, why: "unchanged" };
+    sincePoolCheck = 0;
+    const pulled = await pullIfBetter();
+    if (pulled.ok) {
+      reloadHook();
+      lastSyncedQuality = null;   // our state changed; re-evaluate next run
+      if (log) log(`shared best adopted · ${pulled.remoteQ}pts avg${pulled.edition ? " · " + pulled.edition : ""}`);
+      return pulled;
+    }
+    return { ok: false, why: "unchanged" };
+  }
 
   try {
     const res = await pushIfBetter();

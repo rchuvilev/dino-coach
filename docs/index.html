@@ -2705,6 +2705,8 @@ function quality(evolveState) {
   const mean = isNum(ch.mean) ? ch.mean : ch.best || 0;
   if (!(mean > 0))
     return null;
+  if (isNum(ch.best) && ch.best > 0 && mean > ch.best + 1)
+    return null;
   if ((ch.runs || 0) >= MIN_RUNS)
     return mean;
   const led = (evolveState.ledger || []).filter((e) => isNum(e && (e.score !== undefined ? e.score : e.best)));

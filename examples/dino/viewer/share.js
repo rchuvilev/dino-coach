@@ -143,6 +143,10 @@ export function quality(evolveState) {
   if (!isObj(ch)) return null;
   const mean = isNum(ch.mean) ? ch.mean : ch.best || 0;
   if (!(mean > 0)) return null;
+  // A mean can never exceed the best single run. Local state that violates
+  // this is corrupt - self-heal by discarding it, otherwise an impossible
+  // score blocks every legitimate pool entry for the life of the profile.
+  if (isNum(ch.best) && ch.best > 0 && mean > ch.best + 1) return null;
   // Direct evidence: this champion has been measured enough on its own.
   if ((ch.runs || 0) >= MIN_RUNS) return mean;
   // Otherwise require corroboration from the run history. A champion is

@@ -308,3 +308,18 @@ describe("the pool carries the champion only", () => {
     expect(JSON.parse(store.getItem("dino-evolve-v1")!).champion.edition).toBe("ab12cd");
   });
 });
+
+describe("local corruption cannot block the pool forever", () => {
+  test("REGRESSION: an impossible LOCAL mean scores null, not 5000", () => {
+    // Measured live: a client that adopted the poisoned few01 before the
+    // wire guard existed logged "keeping local (5000pts avg >= 2600)" and
+    // refused every real pool entry. The guard must apply where local state
+    // is READ, not only where a payload arrives.
+    const poisoned = { champion: { mean: 5000, best: 900, runs: 6 }, ledger: [] };
+    expect(share.quality(poisoned)).toBeNull();
+  });
+
+  test("a legitimate champion is unaffected", () => {
+    expect(share.quality({ champion: { mean: 1900, best: 2287, runs: 4 }, ledger: [] })).toBe(1900);
+  });
+});

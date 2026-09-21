@@ -137,6 +137,16 @@ tr.ctrl td{color:var(--warn)}
 </section>
 
 <section class="panel">
+  <div class="phead">SHARED POOL <span id="pool-state" class="tag">offline</span></div>
+  <div class="stats">
+    <span>pool best <b id="pool-best">—</b></span>
+    <span>yours <b id="pool-mine">—</b></span>
+    <span>synced <b id="pool-sync">never</b></span>
+  </div>
+  <div id="pool-why" class="phead" style="margin-top:4px;opacity:.7">—</div>
+</section>
+
+<section class="panel">
   <div class="phead">EVOLUTION <span id="evoinfo" class="tag">—</span></div>
   <canvas id="chart" width="440" height="70" style="width:100%;height:auto;background:#0e1319;border-radius:6px;border:1px solid var(--line);margin-bottom:5px"></canvas>
   <table id="tbl"></table>
@@ -2886,6 +2896,17 @@ function onAdopt(fn) {
   if (typeof fn === "function")
     reloadHook = fn;
 }
+var syncObserver = () => {};
+function onSync(fn) {
+  if (typeof fn === "function")
+    syncObserver = fn;
+}
+function report(kind, r) {
+  try {
+    syncObserver(kind, r);
+  } catch {}
+  return r;
+}
 var lastSyncedQuality = null;
 var sincePoolCheck = 0;
 var POOL_CHECK_EVERY = 5;
@@ -2922,6 +2943,7 @@ async function syncNow(log) {
     const res = await pushIfBetter();
     if (res.ok) {
       lastSyncedQuality = q;
+      report("published", res);
       if (log) {
         log(res.healed ? `shared best published · ${q}pts avg (replaced corrupt entry)` : `shared best published · ${q}pts avg`);
       }
@@ -2932,10 +2954,12 @@ async function syncNow(log) {
       const pulled = await pullIfBetter();
       if (pulled.ok) {
         reloadHook();
+        report("adopted", pulled);
         if (log)
           log(`shared best adopted · ${pulled.remoteQ}pts avg${pulled.edition ? " · " + pulled.edition : ""}`);
         return pulled;
       }
+      report("ahead", res);
       return res;
     }
     return res;
@@ -2950,6 +2974,13 @@ function installAutoPush(log) {
   const fire = () => {
     const local = snapshot();
     if (!local) {
+      pullIfBetter().then((r) => {
+        if (r && r.ok) {
+          reloadHook();
+          if (log)
+            log(`shared best adopted · ${r.remoteQ}pts avg${r.edition ? " · " + r.edition : ""}`);
+        }
+      }).catch(() => {});
       if (log && !warnedUnpublishable) {
         warnedUnpublishable = true;
         let runs = 0;
@@ -2968,8 +2999,21 @@ function installAutoPush(log) {
         body: JSON.stringify(["EVAL", CAS_LUA, "1", KEY, JSON.stringify(local), String(local.score), String(SCHEMA), String(MIN_RUNS)]),
         keepalive: true
       }).then((r) => r.ok ? r.json() : null).then((j) => {
-        if (log && j && (j.result === 1 || j.result === 2))
-          log(`shared best published · ${local.score}pts avg${j.result === 2 ? " (replaced corrupt entry)" : ""}`);
+        if (!j)
+          return;
+        if (j.result === 1 || j.result === 2) {
+          report("published", { why: "published", localQ: local.score });
+          if (log)
+            log(`shared best published · ${local.score}pts avg${j.result === 2 ? " (replaced corrupt entry)" : ""}`);
+        } else {
+          pullIfBetter().then((p) => {
+            if (p && p.ok) {
+              reloadHook();
+              if (log)
+                log(`shared best adopted · ${p.remoteQ}pts avg${p.edition ? " · " + p.edition : ""}`);
+            }
+          }).catch(() => {});
+        }
       }).catch(() => {});
     } catch {}
   };
@@ -3015,6 +3059,7 @@ if (typeof window !== "undefined") {
     }
   };
 }
+var _internals = { KEY, SCHEMA, MIN_RUNS, MAX_BYTES, MLP_DIM, cfg, CAS_LUA };
 
 // features.js
 var S = {
@@ -4879,7 +4924,6 @@ function frame() {
         log(`trained on ${n} outcomes · ${mlp.samplesTrained} total` + (loss != null ? ` · loss ${Number(loss).toFixed(3)}` : ""), "train", { batch: n, total: mlp.samplesTrained, loss });
       });
       tableDirty = true;
-      syncNow(log);
       const budget = episodesFor(currentState().generation);
       if ((cand.runs || 0) >= budget) {
         epInCand = 0;
@@ -5036,6 +5080,54 @@ function verifyLiveness() {
 pop = seedPopulation();
 renderTable();
 drawChart();
+var poolView = { state: "idle", best: null, why: "", syncedAt: 0, edition: "" };
+function renderPool() {
+  const st = $("pool-state");
+  if (!st)
+    return;
+  const cfg2 = _internals && _internals.cfg ? _internals.cfg() : { enabled: false };
+  if (!cfg2.enabled) {
+    st.textContent = "offline";
+    st.className = "tag";
+    const w2 = $("pool-why");
+    if (w2)
+      w2.textContent = "no database configured - training stays local";
+    return;
+  }
+  let mine = null;
+  try {
+    mine = quality(JSON.parse(localStorage.getItem("dino-evolve-v1") || "null"));
+  } catch {}
+  st.textContent = poolView.state;
+  st.className = "tag" + (poolView.state === "synced" || poolView.state === "published" ? " live" : "");
+  const b = $("pool-best");
+  if (b)
+    b.textContent = poolView.best === null ? "—" : `${poolView.best}pts${poolView.edition ? " · " + poolView.edition : ""}`;
+  const m = $("pool-mine");
+  if (m)
+    m.textContent = mine === null ? "not ranked yet" : `${mine}pts`;
+  const sy = $("pool-sync");
+  if (sy) {
+    sy.textContent = poolView.syncedAt ? `${Math.max(1, Math.round((Date.now() - poolView.syncedAt) / 1000))}s ago` : "never";
+  }
+  const w = $("pool-why");
+  if (w)
+    w.textContent = poolView.why || "—";
+}
+function notePool(kind, r) {
+  poolView.state = kind;
+  if (r && typeof r.remoteQ === "number")
+    poolView.best = r.remoteQ;
+  if (r && r.edition)
+    poolView.edition = r.edition;
+  if (kind === "published" && r && typeof r.localQ === "number") {
+    poolView.best = r.localQ;
+    poolView.edition = "yours";
+  }
+  poolView.why = r && (r.why || r.detail) || "";
+  poolView.syncedAt = Date.now();
+  renderPool();
+}
 var sharedReady = null;
 $("run").onclick = async () => {
   if (sharedReady) {
@@ -5252,12 +5344,16 @@ sharedReady = (async () => {
       loadKnn();
       renderTable();
       log(`shared best loaded · ${r.remoteQ}pts avg${r.edition ? " · " + r.edition : ""}`);
+      notePool("adopted", r);
     } else if (r && r.why === "empty") {
       log("shared best: pool is empty - yours will seed it");
+      notePool("empty", { why: "pool is empty - yours will seed it" });
     } else if (r && r.why === "local is as good or better") {
       log(`shared best: keeping local (${r.localQ}pts avg >= ${r.remoteQ})`);
+      notePool("ahead", r);
     } else if (r && r.why && r.why !== "not configured") {
       log(`shared best unavailable: ${r.why}${r.detail ? " (" + r.detail + ")" : ""}`);
+      notePool("error", r);
     }
   } catch (e) {
     try {
@@ -5274,6 +5370,7 @@ sharedReady = (async () => {
       loadKnn();
       renderTable();
     });
+    onSync((kind, r) => notePool(kind, r));
     installAutoPush(log);
   } catch {}
 })();

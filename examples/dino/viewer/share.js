@@ -414,6 +414,15 @@ export async function pushIfBetter() {
 let reloadHook = () => {};
 export function onAdopt(fn) { if (typeof fn === "function") reloadHook = fn; }
 
+/** Host-supplied observer for UI. Called for EVERY sync outcome, from any
+ *  caller, so the panel cannot go stale when a different path publishes. */
+let syncObserver = () => {};
+export function onSync(fn) { if (typeof fn === "function") syncObserver = fn; }
+function report(kind, r) {
+  try { syncObserver(kind, r); } catch { /* UI must never break a sync */ }
+  return r;
+}
+
 let lastSyncedQuality = null;
 /** Episodes since we last asked the pool whether it overtook us. Checking
  *  every episode would be a network call per run for no reason; never
@@ -460,6 +469,7 @@ export async function syncNow(log) {
     const res = await pushIfBetter();
     if (res.ok) {
       lastSyncedQuality = q;
+      report("published", res);
       if (log) {
         log(res.healed
           ? `shared best published · ${q}pts avg (replaced corrupt entry)`
@@ -474,9 +484,11 @@ export async function syncNow(log) {
       const pulled = await pullIfBetter();
       if (pulled.ok) {
         reloadHook();
+        report("adopted", pulled);
         if (log) log(`shared best adopted · ${pulled.remoteQ}pts avg${pulled.edition ? " · " + pulled.edition : ""}`);
         return pulled;
       }
+      report("ahead", res);
       return res;
     }
     return res;
@@ -499,8 +511,14 @@ export function installAutoPush(log) {
   const fire = () => {
     const local = snapshot();
     if (!local) {
-      // Silence here is indistinguishable from a broken integration, which is
-      // exactly how this looked in the field. Say why, once.
+      // Nothing to publish - but still ASK the pool, because a tab being
+      // hidden is one of only two moments we sync at all.
+      pullIfBetter().then((r) => {
+        if (r && r.ok) {
+          reloadHook();
+          if (log) log(`shared best adopted · ${r.remoteQ}pts avg${r.edition ? " · " + r.edition : ""}`);
+        }
+      }).catch(() => { /* exit-path failure must be silent */ });
       if (log && !warnedUnpublishable) {
         warnedUnpublishable = true;
         let runs = 0;
@@ -519,7 +537,22 @@ export function installAutoPush(log) {
         keepalive: true,
       })
         .then((r) => (r.ok ? r.json() : null))
-        .then((j) => { if (log && j && (j.result === 1 || j.result === 2)) log(`shared best published · ${local.score}pts avg${j.result === 2 ? " (replaced corrupt entry)" : ""}`); })
+        .then((j) => {
+          if (!j) return;
+          if (j.result === 1 || j.result === 2) {
+            report("published", { why: "published", localQ: local.score });
+            if (log) log(`shared best published · ${local.score}pts avg${j.result === 2 ? " (replaced corrupt entry)" : ""}`);
+          } else {
+            // Refused: the pool is ahead, so adopt it rather than leave
+            // this browser behind until the next reload.
+            pullIfBetter().then((p) => {
+              if (p && p.ok) {
+                reloadHook();
+                if (log) log(`shared best adopted · ${p.remoteQ}pts avg${p.edition ? " · " + p.edition : ""}`);
+              }
+            }).catch(() => {});
+          }
+        })
         .catch(() => { /* exit-path failure must be silent */ });
     } catch { /* ignore */ }
   };

@@ -1063,13 +1063,12 @@ function frame() {
         );
       });
       tableDirty = true;
-      // SYNC AT EPISODE END. Measured: 16-20 episodes/min at max rate, so a
-      // blind write per run would be ~20 network writes a minute for no
-      // benefit - the champion is unchanged by most runs. share.syncNow()
-      // therefore compares the publishable quality against what it last
-      // sent and does nothing when it has not moved, which makes the common
-      // case free and the interesting case immediate.
-      share.syncNow(log);
+      // NO per-episode sync. Syncing is a page-lifecycle event only:
+      // once on load, and on visibilitychange/pagehide. Episodes end 16-20
+      // times a minute at max rate, so syncing per run meant a network
+      // write mid-search for a champion that is still being measured.
+      // Publishing on the way out means what we publish is the state the
+      // session actually settled on.
 
       // Drive on cand.runs, which PERSISTS, not on epInCand which resets on
       // reload - that mismatch let candidates reach 28 runs against a budget
@@ -1254,6 +1253,62 @@ drawChart();
  *  awaits it so a run can never begin on a random genome while a pooled
  *  champion is still in flight - measured, that race silently discarded an
  *  adopted champion on every wiped profile. */
+
+/**
+ * SHARED POOL panel. The sync layer was previously observable only through
+ * log lines that scrolled away, which is why "is it even running?" kept
+ * being unanswerable without DevTools. This shows the live comparison that
+ * actually decides publish-vs-adopt.
+ */
+let poolView = { state: "idle", best: null, why: "", syncedAt: 0, edition: "" };
+
+function renderPool() {
+  const st = $("pool-state");
+  if (!st) return;
+  const cfg = share._internals && share._internals.cfg ? share._internals.cfg() : { enabled: false };
+  if (!cfg.enabled) {
+    st.textContent = "offline";
+    st.className = "tag";
+    const w = $("pool-why");
+    if (w) w.textContent = "no database configured - training stays local";
+    return;
+  }
+  let mine = null;
+  try {
+    mine = share.quality(JSON.parse(localStorage.getItem("dino-evolve-v1") || "null"));
+  } catch { /* corrupt local state shows as no score */ }
+
+  st.textContent = poolView.state;
+  st.className = "tag" + (poolView.state === "synced" || poolView.state === "published" ? " live" : "");
+
+  const b = $("pool-best");
+  if (b) b.textContent = poolView.best === null ? "—" : `${poolView.best}pts${poolView.edition ? " · " + poolView.edition : ""}`;
+  const m = $("pool-mine");
+  if (m) m.textContent = mine === null ? "not ranked yet" : `${mine}pts`;
+  const sy = $("pool-sync");
+  if (sy) {
+    sy.textContent = poolView.syncedAt
+      ? `${Math.max(1, Math.round((Date.now() - poolView.syncedAt) / 1000))}s ago`
+      : "never";
+  }
+  const w = $("pool-why");
+  if (w) w.textContent = poolView.why || "—";
+}
+
+/** Record a sync outcome for the panel, then repaint. */
+function notePool(kind, r) {
+  poolView.state = kind;
+  if (r && typeof r.remoteQ === "number") poolView.best = r.remoteQ;
+  if (r && r.edition) poolView.edition = r.edition;
+  if (kind === "published" && r && typeof r.localQ === "number") {
+    poolView.best = r.localQ;
+    poolView.edition = "yours";
+  }
+  poolView.why = (r && (r.why || r.detail)) || "";
+  poolView.syncedAt = Date.now();
+  renderPool();
+}
+
 let sharedReady = null;
 
 $("run").onclick = async () => {
@@ -1519,12 +1574,16 @@ sharedReady = (async () => {
       loadKnn();
       renderTable();
       log(`shared best loaded · ${r.remoteQ}pts avg${r.edition ? " · " + r.edition : ""}`);
+      notePool("adopted", r);
     } else if (r && r.why === "empty") {
       log("shared best: pool is empty - yours will seed it");
+      notePool("empty", { why: "pool is empty - yours will seed it" });
     } else if (r && r.why === "local is as good or better") {
       log(`shared best: keeping local (${r.localQ}pts avg >= ${r.remoteQ})`);
+      notePool("ahead", r);
     } else if (r && r.why && r.why !== "not configured") {
       log(`shared best unavailable: ${r.why}${r.detail ? " (" + r.detail + ")" : ""}`);
+      notePool("error", r);
     }
   } catch (e) {
     // Never block startup on the network - but SAY so. A bare catch here
@@ -1543,6 +1602,7 @@ sharedReady = (async () => {
       loadKnn();
       renderTable();
     });
+    share.onSync((kind, r) => notePool(kind, r));
     share.installAutoPush(log);
   } catch { /* ignore */ }
 })();

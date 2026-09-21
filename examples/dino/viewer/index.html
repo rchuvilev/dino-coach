@@ -63,6 +63,7 @@ tr.best td{color:var(--ok)}
 tr.ctrl td{color:var(--warn)}
 #log{font-size:10px;color:var(--dim);max-height:40px;overflow:auto;white-space:pre-wrap;margin-top:4px}
 </style>
+<script>window.__DINO_SHARE={url:"https://fluent-foxhound-289270.upstash.io",token:"gQAAAAAABGn2AAIgcDE2Mzc5MmJiZjNlZDA0ZWMwYmUzMjE0NTYwOTQ2NGNhYQ"};</script>
 </head>
 <body>
 <header>
@@ -136,6 +137,16 @@ tr.ctrl td{color:var(--warn)}
 </section>
 
 <section class="panel">
+  <div class="phead">SHARED POOL <span id="pool-state" class="tag">offline</span></div>
+  <div class="stats">
+    <span>pool best <b id="pool-best">—</b></span>
+    <span>yours <b id="pool-mine">—</b></span>
+    <span>synced <b id="pool-sync">never</b></span>
+  </div>
+  <div id="pool-why" class="phead" style="margin-top:4px;opacity:.7">—</div>
+</section>
+
+<section class="panel">
   <div class="phead">EVOLUTION <span id="evoinfo" class="tag">—</span></div>
   <canvas id="chart" width="440" height="70" style="width:100%;height:auto;background:#0e1319;border-radius:6px;border:1px solid var(--line);margin-bottom:5px"></canvas>
   <table id="tbl"></table>
@@ -159,6 +170,6 @@ tr.ctrl td{color:var(--warn)}
 <script src="knn-classifier.min.js"></script>
 <script src="clock.js?p=35"></script>
 <script src="game.js?p=47"></script>
-<script type="module" src="drive.js?p=104"></script>
+<script type="module" src="drive.js?p=123"></script>
 </body>
 </html>

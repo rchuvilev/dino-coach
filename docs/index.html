@@ -63,6 +63,7 @@ tr.best td{color:var(--ok)}
 tr.ctrl td{color:var(--warn)}
 #log{font-size:10px;color:var(--dim);max-height:40px;overflow:auto;white-space:pre-wrap;margin-top:4px}
 </style>
+<script>window.__DINO_SHARE={url:"https://fluent-foxhound-289270.upstash.io",token:"gQAAAAAABGn2AAIgcDE2Mzc5MmJiZjNlZDA0ZWMwYmUzMjE0NTYwOTQ2NGNhYQ"};</script>
 </head>
 <body>
 <header>
@@ -2583,6 +2584,248 @@ class TakeoffKNN {
   }
 }
 
+// share.js
+var KEY = "dino:best:v1";
+var SCHEMA = 1;
+var MIN_RUNS = 3;
+var MAX_BYTES = 400000;
+var MLP_DIM = 384;
+function cfg() {
+  const c = typeof window !== "undefined" && window.__DINO_SHARE || {};
+  const url = (c.url || "").replace(/\/+$/, "");
+  return { url, token: c.token || "", enabled: !!(url && c.token) };
+}
+async function redis(args, timeoutMs = 4000) {
+  const { url, token, enabled } = cfg();
+  if (!enabled)
+    return { ok: false, code: "unconfigured" };
+  let ctl, t;
+  try {
+    ctl = new AbortController;
+    t = setTimeout(() => ctl.abort(), timeoutMs);
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(args),
+      signal: ctl.signal
+    });
+    if (res.status === 401 || res.status === 403)
+      return { ok: false, code: "auth" };
+    if (res.status === 429)
+      return { ok: false, code: "rate_limited" };
+    if (!res.ok)
+      return { ok: false, code: "http_" + res.status };
+    let j;
+    try {
+      j = await res.json();
+    } catch {
+      return { ok: false, code: "bad_json" };
+    }
+    if (j && j.error)
+      return { ok: false, code: "redis_error", detail: String(j.error) };
+    return { ok: true, result: j ? j.result : null };
+  } catch (e) {
+    const aborted = e && (e.name === "AbortError" || /abort/i.test(String(e.message || "")));
+    return { ok: false, code: aborted ? "timeout" : "network" };
+  } finally {
+    if (t)
+      clearTimeout(t);
+  }
+}
+var isObj = (x) => !!x && typeof x === "object" && !Array.isArray(x);
+var isNum = (x) => typeof x === "number" && Number.isFinite(x);
+function validate(o) {
+  if (!isObj(o))
+    return { valid: false, reason: "not an object" };
+  if (o.v !== SCHEMA)
+    return { valid: false, reason: `schema ${o.v} != ${SCHEMA}` };
+  if (!isNum(o.score) || o.score <= 0)
+    return { valid: false, reason: "score missing or <= 0" };
+  if (!isNum(o.runs) || o.runs < MIN_RUNS)
+    return { valid: false, reason: `runs < ${MIN_RUNS}` };
+  if (!isNum(o.at) || o.at <= 0)
+    return { valid: false, reason: "timestamp missing" };
+  const ev = o.evolve;
+  if (!isObj(ev))
+    return { valid: false, reason: "evolve missing" };
+  const ch = ev.champion;
+  if (!isObj(ch))
+    return { valid: false, reason: "champion missing" };
+  if (!isObj(ch.g))
+    return { valid: false, reason: "genome missing" };
+  for (const k of ["loA", "loB", "widthA", "widthB", "duck"]) {
+    if (!isNum(ch.g[k]))
+      return { valid: false, reason: `genome.${k} not a number` };
+  }
+  const mean = isNum(ch.mean) ? ch.mean : ch.best;
+  if (!isNum(mean))
+    return { valid: false, reason: "champion has no mean/best" };
+  if (Math.abs(mean - o.score) > 1) {
+    return { valid: false, reason: `score ${o.score} disagrees with champion ${mean}` };
+  }
+  if (o.mlp != null) {
+    if (!isObj(o.mlp))
+      return { valid: false, reason: "mlp not an object" };
+    if (o.mlp.dim != null && o.mlp.dim !== MLP_DIM) {
+      return { valid: false, reason: `mlp dim ${o.mlp.dim} != ${MLP_DIM}` };
+    }
+  }
+  if (o.knn != null && !isObj(o.knn))
+    return { valid: false, reason: "knn not an object" };
+  return { valid: true, reason: "" };
+}
+function quality(evolveState) {
+  const ch = evolveState && evolveState.champion;
+  if (!isObj(ch))
+    return null;
+  if ((ch.runs || 0) < MIN_RUNS)
+    return null;
+  const mean = isNum(ch.mean) ? ch.mean : ch.best || 0;
+  return mean > 0 ? mean : null;
+}
+function snapshot() {
+  const get = (k) => {
+    try {
+      return JSON.parse(localStorage.getItem(k) || "null");
+    } catch {
+      return null;
+    }
+  };
+  const evolve = get("dino-evolve-v1");
+  const q = quality(evolve);
+  if (q === null)
+    return null;
+  const ch = evolve.champion;
+  const snap = {
+    v: SCHEMA,
+    score: q,
+    best: ch.best || 0,
+    runs: ch.runs || 0,
+    edition: ch.edition || "",
+    at: Date.now(),
+    evolve,
+    mlp: get("dino-mlp-v1"),
+    knn: get("dino-knn-v1")
+  };
+  const v = validate(snap);
+  if (!v.valid)
+    return null;
+  if (JSON.stringify(snap).length > MAX_BYTES) {
+    const trimmed = { ...snap, knn: null };
+    return JSON.stringify(trimmed).length > MAX_BYTES ? null : trimmed;
+  }
+  return snap;
+}
+async function fetchBest() {
+  const r = await redis(["GET", KEY]);
+  if (!r.ok)
+    return { ok: false, code: r.code, detail: r.detail };
+  if (!r.result)
+    return { ok: false, code: "empty" };
+  let obj;
+  try {
+    obj = typeof r.result === "string" ? JSON.parse(r.result) : r.result;
+  } catch {
+    return { ok: false, code: "corrupt_json" };
+  }
+  const v = validate(obj);
+  if (!v.valid)
+    return { ok: false, code: "invalid", detail: v.reason };
+  return { ok: true, value: obj };
+}
+function install(remote) {
+  const v = validate(remote);
+  if (!v.valid)
+    return { ok: false, code: "invalid", detail: v.reason };
+  const OWNED = [
+    "dino-evolve-v1",
+    "dino-mlp-v1",
+    "dino-knn-v1",
+    "dino-analysis-v1",
+    "dino-logs-v1",
+    "dino-evolve-slot-v1"
+  ];
+  const prev = {};
+  for (const k of OWNED)
+    prev[k] = localStorage.getItem(k);
+  try {
+    for (const k of OWNED)
+      localStorage.removeItem(k);
+    localStorage.setItem("dino-evolve-v1", JSON.stringify(remote.evolve));
+    if (remote.mlp)
+      localStorage.setItem("dino-mlp-v1", JSON.stringify(remote.mlp));
+    if (remote.knn)
+      localStorage.setItem("dino-knn-v1", JSON.stringify(remote.knn));
+    return { ok: true, replaced: OWNED.length };
+  } catch (e) {
+    try {
+      for (const k of OWNED) {
+        if (prev[k] == null)
+          localStorage.removeItem(k);
+        else
+          localStorage.setItem(k, prev[k]);
+      }
+    } catch {}
+    const quota = e && /quota|exceed/i.test(String(e && e.name || e && e.message || ""));
+    return { ok: false, code: quota ? "quota" : "write_failed" };
+  }
+}
+async function pullIfBetter() {
+  if (!cfg().enabled)
+    return { ok: false, why: "not configured" };
+  let localQ = null;
+  try {
+    localQ = quality(JSON.parse(localStorage.getItem("dino-evolve-v1") || "null"));
+  } catch {}
+  const got = await fetchBest();
+  if (!got.ok)
+    return { ok: false, why: got.code, detail: got.detail, localQ };
+  const remote = got.value;
+  if (localQ !== null && remote.score <= localQ) {
+    return { ok: false, why: "local is as good or better", localQ, remoteQ: remote.score };
+  }
+  const ins = install(remote);
+  if (!ins.ok)
+    return { ok: false, why: ins.code, detail: ins.detail, localQ, remoteQ: remote.score };
+  return { ok: true, why: "installed remote", localQ, remoteQ: remote.score, edition: remote.edition };
+}
+var CAS_LUA = "local cur = redis.call('GET', KEYS[1]) " + "local corrupt = 0 " + "if cur then " + "  local ok, o = pcall(cjson.decode, cur) " + "  if not ok or type(o) ~= 'table' then corrupt = 1 " + "  elseif tonumber(o.v) ~= tonumber(ARGV[3]) then corrupt = 1 " + "  elseif not tonumber(o.score) or tonumber(o.score) <= 0 then corrupt = 1 " + "  elseif not tonumber(o.runs) or tonumber(o.runs) < tonumber(ARGV[4]) then corrupt = 1 " + "  elseif type(o.evolve) ~= 'table' or type(o.evolve.champion) ~= 'table' " + "         or type(o.evolve.champion.g) ~= 'table' then corrupt = 1 " + "  end " + "  if corrupt == 0 and tonumber(o.score) >= tonumber(ARGV[2]) then return 0 end " + "end " + "redis.call('SET', KEYS[1], ARGV[1]) " + "if corrupt == 1 then return 2 end " + "return 1";
+function installAutoPush(log) {
+  if (!cfg().enabled)
+    return false;
+  let lastAt = 0;
+  const fire = () => {
+    const now = Date.now();
+    if (now - lastAt < 30000)
+      return;
+    const local = snapshot();
+    if (!local)
+      return;
+    lastAt = now;
+    const { url, token } = cfg();
+    try {
+      fetch(url, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify(["EVAL", CAS_LUA, "1", KEY, JSON.stringify(local), String(local.score), String(SCHEMA), String(MIN_RUNS)]),
+        keepalive: true
+      }).then((r) => r.ok ? r.json() : null).then((j) => {
+        if (log && j && (j.result === 1 || j.result === 2))
+          log(`shared best published · ${local.score}pts avg${j.result === 2 ? " (replaced corrupt entry)" : ""}`);
+      }).catch(() => {});
+    } catch {}
+  };
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden")
+      fire();
+  });
+  window.addEventListener("pagehide", fire);
+  return true;
+}
+
 // features.js
 var S = {
   gap: 60,
@@ -3103,7 +3346,7 @@ function migrateGenome(g) {
   }
   return null;
 }
-function validate(S2) {
+function validate2(S2) {
   if (!S2 || typeof S2 !== "object")
     return false;
   for (const list of [S2.population, S2.inProgress]) {
@@ -3143,7 +3386,7 @@ function load() {
     const raw = localStorage.getItem(STORE_KEY);
     if (raw) {
       const parsed = migrate(JSON.parse(raw));
-      if (validate(parsed))
+      if (validate2(parsed))
         return parsed;
       try {
         localStorage.removeItem(STORE_KEY);
@@ -3375,6 +3618,10 @@ function importState(text) {
     throw new Error("not a state object");
   S2 = migrate(parsed);
   save(S2);
+  return S2;
+}
+function reloadFromStorage() {
+  S2 = load();
   return S2;
 }
 function resetAll() {
@@ -4779,6 +5026,24 @@ function loadKnn() {
   } catch {}
 }
 loadKnn();
+(async () => {
+  try {
+    const r = await pullIfBetter();
+    if (r && r.ok) {
+      reloadFromStorage();
+      loadAnalysis();
+      loadMlp();
+      loadKnn();
+      renderTable();
+      log(`shared best loaded · ${r.remoteQ}pts avg${r.edition ? " · " + r.edition : ""}`);
+    } else if (r && r.why && !["not configured", "empty", "local is as good or better"].includes(r.why)) {
+      log(`shared best unavailable: ${r.why}${r.detail ? " (" + r.detail + ")" : ""}`);
+    }
+  } catch {}
+  try {
+    installAutoPush(log);
+  } catch {}
+})();
 var saveBtn = $("save");
 if (saveBtn) {
   saveBtn.onclick = () => {

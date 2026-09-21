@@ -8,3 +8,7 @@ examples/dino/viewer/game.js
 examples/dino/viewer/game.orig.js
 examples/dino/viewer/node_modules/
 examples/dino/viewer/dino-standalone.html
+# Upstash credentials for the shared-training db. Injected into the built
+# page at publish time; never committed.
+dino-redis.json
+examples/dino/viewer/share.config.js

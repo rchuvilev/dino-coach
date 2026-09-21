@@ -6,6 +6,7 @@
  * stopped. Population persists to localStorage, so a reload continues.
  */
 import { TakeoffKNN, featurize as knnFeaturize } from "./knn.js";
+import * as share from "./share.js";
 import { featurize } from "./features.js";
 import { JumpModel } from "./mlp.js";
 import { LogStore } from "./logstore.js";
@@ -39,6 +40,7 @@ import {
   seedPopulation,
   slotInfo,
   windowAt,
+  reloadFromStorage,
 } from "./evolve.js";
 
 const CLOCK = window.__CLOCK;
@@ -1466,6 +1468,36 @@ function loadKnn() {
   } catch { /* corrupt state must not block startup */ }
 }
 loadKnn();
+
+/**
+ * SHARED BEST TRAINING.
+ *
+ * The local loads above are synchronous and already ran, so a pull that
+ * lands later must RE-load the engines from the freshly installed state -
+ * otherwise the imported genome would sit in localStorage while the engines
+ * kept running the local one, which looks like a working sync and is not.
+ *
+ * Every failure path is non-fatal: the page must work offline, on a blocked
+ * network, and with the share layer unconfigured.
+ */
+(async () => {
+  try {
+    const r = await share.pullIfBetter();
+    if (r && r.ok) {
+      reloadFromStorage();
+      loadAnalysis();
+      loadMlp();
+      loadKnn();
+      renderTable();
+      log(`shared best loaded · ${r.remoteQ}pts avg${r.edition ? " · " + r.edition : ""}`);
+    } else if (r && r.why && !["not configured", "empty", "local is as good or better"].includes(r.why)) {
+      log(`shared best unavailable: ${r.why}${r.detail ? " (" + r.detail + ")" : ""}`);
+    }
+  } catch {
+    /* never block startup on the network */
+  }
+  try { share.installAutoPush(log); } catch { /* ignore */ }
+})();
 
 const saveBtn = $("save");
 if (saveBtn) {

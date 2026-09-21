@@ -6,8 +6,15 @@
   "scripts": {
     "test": "bun test test/",
     "demo": "bun run examples/demo.ts",
+    "game:fetch": "cd examples/dino/viewer && curl -fsSL -o game.js 'https://chromedino.com/js/game.js?v=26' && cp game.js game.orig.js && patch game.js < game.patch",
+    "share:inject": "python3 scripts/inject-share-config.py",
+    "share:e2e": "python3 scripts/e2e-share.py",
+    "build": "sh examples/dino/viewer/build.sh",
     "build:pages": "sh scripts/build-pages.sh",
-    "build": "sh examples/dino/viewer/build.sh"
+    "check:leaks": "python3 scripts/check-leaks.py",
+    "pages:status": "gh api repos/rchuvilev/dino-coach/pages --jq '{status,html_url,build_type,source}'",
+    "pages:verify": "sh scripts/verify-pages.sh",
+    "publish:pages": "npm run test && npm run share:inject && npm run build:pages && npm run check:leaks && git add -A docs && git commit -m \"Republish pages\" && git push origin main"
   },
   "dependencies": {
     "@tensorflow/tfjs": "^4.22.0",

@@ -670,6 +670,19 @@ export function importState(text) {
   return S;
 }
 
+/**
+ * Re-read persisted state into the live module.
+ *
+ * `let S = load()` runs once at import, so anything written to localStorage
+ * afterwards (notably an installed shared-best snapshot) is invisible until
+ * this is called. Without it the imported genome sits in storage while the
+ * engine keeps running the old one - which looks exactly like a working sync.
+ */
+export function reloadFromStorage() {
+  S = load();
+  return S;
+}
+
 export function resetAll() {
   // Mutate IN PLACE. Reassigning S left other closures holding the old
   // object, which was then written back by the next autosave - measured,

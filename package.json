@@ -1,11 +1,13 @@
 {
-  "name": "ai-mentat-blueprint",
+  "name": "dino-coach",
   "version": "0.1.0",
   "type": "module",
-  "description": "Tick-loop agent framework: perception heads -> priority rules -> evolved decisions",
+  "description": "Self-improving Chrome Dino agent: perception heads -> priority rules -> evolved decisions",
   "scripts": {
     "test": "bun test test/",
-    "demo": "bun run examples/demo.ts"
+    "demo": "bun run examples/demo.ts",
+    "build:pages": "sh scripts/build-pages.sh",
+    "build": "sh examples/dino/viewer/build.sh"
   },
   "dependencies": {
     "@tensorflow/tfjs": "^4.22.0",

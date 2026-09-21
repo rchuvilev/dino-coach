@@ -319,13 +319,25 @@ export async function pushIfBetter() {
 export function installAutoPush(log) {
   if (!cfg().enabled) return false;
   let lastAt = 0;
+  let warnedUnpublishable = false;
   const fire = () => {
     // visibilitychange fires on every tab switch and a publish is a network
     // write; 30s is well below a realistic improvement rate.
     const now = Date.now();
     if (now - lastAt < 30000) return;
     const local = snapshot();
-    if (!local) return;
+    if (!local) {
+      // Silence here is indistinguishable from a broken integration, which is
+      // exactly how this looked in the field. Say why, once.
+      if (log && !warnedUnpublishable) {
+        warnedUnpublishable = true;
+        let runs = 0;
+        try { runs = (JSON.parse(localStorage.getItem("dino-evolve-v1") || "{}").champion || {}).runs || 0; }
+        catch { /* ignore */ }
+        log(`shared best: not publishing yet · needs ${MIN_RUNS} measured runs (have ${runs})`);
+      }
+      return;
+    }
     lastAt = now;
     const { url, token } = cfg();
     try {
@@ -345,6 +357,40 @@ export function installAutoPush(log) {
   });
   window.addEventListener("pagehide", fire);
   return true;
+}
+
+// Exposed for diagnosis from DevTools on the deployed page: a user who sees
+// no network activity can run `await __dinoShare.diagnose()` and get the
+// actual reason rather than silence.
+if (typeof window !== "undefined") {
+  window.__dinoShare = {
+    cfg,
+    quality,
+    snapshot,
+    fetchBest,
+    pullIfBetter,
+    pushIfBetter,
+    async diagnose() {
+      const c = cfg();
+      const out = { configured: c.enabled, url: c.url, tokenLen: c.token.length };
+      if (!c.enabled) { out.verdict = "no url/token injected into the page"; return out; }
+      let local = null;
+      try { local = JSON.parse(localStorage.getItem("dino-evolve-v1") || "null"); } catch {}
+      out.localRuns = (local && local.champion && local.champion.runs) || 0;
+      out.localQuality = quality(local);
+      out.publishable = snapshot() !== null;
+      if (!out.publishable) out.whyNotPublishable = `needs ${MIN_RUNS}+ measured runs (have ${out.localRuns})`;
+      const t0 = Date.now();
+      const got = await fetchBest();
+      out.remote = got.ok ? { score: got.value.score, runs: got.value.runs, edition: got.value.edition } : null;
+      out.remoteError = got.ok ? null : (got.code + (got.detail ? ": " + got.detail : ""));
+      out.roundTripMs = Date.now() - t0;
+      out.verdict = got.ok || got.code === "empty"
+        ? "network OK"
+        : "network/ACL problem: " + out.remoteError;
+      return out;
+    },
+  };
 }
 
 export const _internals = { KEY, SCHEMA, MIN_RUNS, MAX_BYTES, MLP_DIM, cfg, CAS_LUA };

@@ -1490,7 +1490,11 @@ loadKnn();
       loadKnn();
       renderTable();
       log(`shared best loaded · ${r.remoteQ}pts avg${r.edition ? " · " + r.edition : ""}`);
-    } else if (r && r.why && !["not configured", "empty", "local is as good or better"].includes(r.why)) {
+    } else if (r && r.why === "empty") {
+      log("shared best: pool is empty - yours will seed it");
+    } else if (r && r.why === "local is as good or better") {
+      log(`shared best: keeping local (${r.localQ}pts avg >= ${r.remoteQ})`);
+    } else if (r && r.why && r.why !== "not configured") {
       log(`shared best unavailable: ${r.why}${r.detail ? " (" + r.detail + ")" : ""}`);
     }
   } catch {

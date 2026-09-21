@@ -2793,17 +2793,45 @@ async function pullIfBetter() {
   return { ok: true, why: "installed remote", localQ, remoteQ: remote.score, edition: remote.edition };
 }
 var CAS_LUA = "local cur = redis.call('GET', KEYS[1]) " + "local corrupt = 0 " + "if cur then " + "  local ok, o = pcall(cjson.decode, cur) " + "  if not ok or type(o) ~= 'table' then corrupt = 1 " + "  elseif tonumber(o.v) ~= tonumber(ARGV[3]) then corrupt = 1 " + "  elseif not tonumber(o.score) or tonumber(o.score) <= 0 then corrupt = 1 " + "  elseif not tonumber(o.runs) or tonumber(o.runs) < tonumber(ARGV[4]) then corrupt = 1 " + "  elseif type(o.evolve) ~= 'table' or type(o.evolve.champion) ~= 'table' " + "         or type(o.evolve.champion.g) ~= 'table' then corrupt = 1 " + "  end " + "  if corrupt == 0 and tonumber(o.score) >= tonumber(ARGV[2]) then return 0 end " + "end " + "redis.call('SET', KEYS[1], ARGV[1]) " + "if corrupt == 1 then return 2 end " + "return 1";
+async function pushIfBetter() {
+  if (!cfg().enabled)
+    return { ok: false, why: "not configured" };
+  const local = snapshot();
+  if (!local)
+    return { ok: false, why: `no publishable snapshot (needs ${MIN_RUNS}+ runs)` };
+  const r = await redis(["EVAL", CAS_LUA, "1", KEY, JSON.stringify(local), String(local.score), String(SCHEMA), String(MIN_RUNS)]);
+  if (!r.ok)
+    return { ok: false, why: r.code, detail: r.detail, localQ: local.score };
+  if (r.result === 2) {
+    return { ok: true, why: "replaced corrupt remote", healed: true, localQ: local.score };
+  }
+  return {
+    ok: r.result === 1,
+    why: r.result === 1 ? "published" : "remote is as good or better",
+    localQ: local.score
+  };
+}
 function installAutoPush(log) {
   if (!cfg().enabled)
     return false;
   let lastAt = 0;
+  let warnedUnpublishable = false;
   const fire = () => {
     const now = Date.now();
     if (now - lastAt < 30000)
       return;
     const local = snapshot();
-    if (!local)
+    if (!local) {
+      if (log && !warnedUnpublishable) {
+        warnedUnpublishable = true;
+        let runs = 0;
+        try {
+          runs = (JSON.parse(localStorage.getItem("dino-evolve-v1") || "{}").champion || {}).runs || 0;
+        } catch {}
+        log(`shared best: not publishing yet · needs ${MIN_RUNS} measured runs (have ${runs})`);
+      }
       return;
+    }
     lastAt = now;
     const { url, token } = cfg();
     try {
@@ -2824,6 +2852,40 @@ function installAutoPush(log) {
   });
   window.addEventListener("pagehide", fire);
   return true;
+}
+if (typeof window !== "undefined") {
+  window.__dinoShare = {
+    cfg,
+    quality,
+    snapshot,
+    fetchBest,
+    pullIfBetter,
+    pushIfBetter,
+    async diagnose() {
+      const c = cfg();
+      const out = { configured: c.enabled, url: c.url, tokenLen: c.token.length };
+      if (!c.enabled) {
+        out.verdict = "no url/token injected into the page";
+        return out;
+      }
+      let local = null;
+      try {
+        local = JSON.parse(localStorage.getItem("dino-evolve-v1") || "null");
+      } catch {}
+      out.localRuns = local && local.champion && local.champion.runs || 0;
+      out.localQuality = quality(local);
+      out.publishable = snapshot() !== null;
+      if (!out.publishable)
+        out.whyNotPublishable = `needs ${MIN_RUNS}+ measured runs (have ${out.localRuns})`;
+      const t0 = Date.now();
+      const got = await fetchBest();
+      out.remote = got.ok ? { score: got.value.score, runs: got.value.runs, edition: got.value.edition } : null;
+      out.remoteError = got.ok ? null : got.code + (got.detail ? ": " + got.detail : "");
+      out.roundTripMs = Date.now() - t0;
+      out.verdict = got.ok || got.code === "empty" ? "network OK" : "network/ACL problem: " + out.remoteError;
+      return out;
+    }
+  };
 }
 
 // features.js
@@ -5036,7 +5098,11 @@ loadKnn();
       loadKnn();
       renderTable();
       log(`shared best loaded · ${r.remoteQ}pts avg${r.edition ? " · " + r.edition : ""}`);
-    } else if (r && r.why && !["not configured", "empty", "local is as good or better"].includes(r.why)) {
+    } else if (r && r.why === "empty") {
+      log("shared best: pool is empty - yours will seed it");
+    } else if (r && r.why === "local is as good or better") {
+      log(`shared best: keeping local (${r.localQ}pts avg >= ${r.remoteQ})`);
+    } else if (r && r.why && r.why !== "not configured") {
       log(`shared best unavailable: ${r.why}${r.detail ? " (" + r.detail + ")" : ""}`);
     }
   } catch {}

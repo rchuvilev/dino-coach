@@ -1325,6 +1325,8 @@ $("run").onclick = () => {
     // Only pump from rAF above real time; at 1x the interval alone gives
     // ~60 game frames/sec and adding rAF would stop it being "real speed".
     if (!rateEl || Number(rateEl.value) > 2 || Number(rateEl.value) === 0) pump();
+    // Painting here keeps the overlay on the same frame the display shows.
+    paint();
     rafId = realRAF(rafPump);
   };
   painter = setInterval(() => {
@@ -1377,6 +1379,9 @@ $("run").onclick = () => {
 
   loop = setInterval(() => {
     pump();
+    // Repaint in the SAME turn the world advanced, so the overlay cannot
+    // draw a position the game has already scrolled past.
+    paint();
     watchdog();
     // watchdog: if the odometer has not moved between ticks, the game lost
     // its queued frame - re-prime it rather than silently freezing.

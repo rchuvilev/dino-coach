@@ -4965,6 +4965,7 @@ $("run").onclick = () => {
       return;
     if (!rateEl || Number(rateEl.value) > 2 || Number(rateEl.value) === 0)
       pump();
+    paint();
     rafId = realRAF(rafPump);
   };
   painter = setInterval(() => {
@@ -5007,6 +5008,7 @@ $("run").onclick = () => {
   watchdogRef = watchdog;
   loop = setInterval(() => {
     pump();
+    paint();
     watchdog();
     const s = read();
     const d = s ? s.distance : -1;

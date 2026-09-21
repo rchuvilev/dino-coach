@@ -141,7 +141,14 @@ export function validate(o) {
 export function quality(evolveState) {
   const ch = evolveState && evolveState.champion;
   if (!isObj(ch)) return null;
-  const mean = isNum(ch.mean) ? ch.mean : ch.best || 0;
+  // An IMPORTED champion has not been measured on this device. Until it
+  // has MIN_RUNS local measurements it contributes no score of our own -
+  // re-publishing an imported mean as if we had earned it both misreports
+  // the UI and lets one device's number circulate forever unverified.
+  if (ch.fromPool && (ch.localRuns || 0) < MIN_RUNS) return null;
+  const mean = ch.fromPool && isNum(ch.localMean) && (ch.localRuns || 0) >= MIN_RUNS
+    ? ch.localMean
+    : isNum(ch.mean) ? ch.mean : ch.best || 0;
   if (!(mean > 0)) return null;
   // A mean can never exceed the best single run. Local state that violates
   // this is corrupt - self-heal by discarding it, otherwise an impossible
@@ -499,9 +506,12 @@ export async function syncNow(log) {
 }
 
 /**
- * Push on the way out. `visibilitychange -> hidden` is the only event that
- * reliably fires on mobile; beforeunload/unload do not fire when a tab is
- * swiped away or the OS reclaims the page. pagehide covers bfcache.
+ * Sync on the way out of the page.
+ *
+ * Syncing happens at exactly two moments: once on load, and here on
+ * pagehide. visibilitychange was deliberately dropped - it fires on every
+ * tab switch and every app backgrounding, which on mobile is near-constant,
+ * and it published mid-search states that no one asked to share.
  *
  * keepalive lets the request outlive the page, which a normal fetch cannot.
  */
@@ -556,9 +566,10 @@ export function installAutoPush(log) {
         .catch(() => { /* exit-path failure must be silent */ });
     } catch { /* ignore */ }
   };
-  document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "hidden") fire();
-  });
+  // Reload-only syncing, by request. visibilitychange fires on every tab
+  // switch and app backgrounding, which on mobile is constant, and it
+  // published mid-search states nobody asked for. pagehide still covers a
+  // real navigation away, so a session's final state is not lost.
   window.addEventListener("pagehide", fire);
   return true;
 }

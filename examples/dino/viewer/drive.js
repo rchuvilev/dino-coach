@@ -1063,8 +1063,8 @@ function frame() {
         );
       });
       tableDirty = true;
-      // NO per-episode sync. Syncing is a page-lifecycle event only:
-      // once on load, and on visibilitychange/pagehide. Episodes end 16-20
+      // NO per-episode sync. Syncing happens at exactly two moments: once
+      // on load, and once on pagehide. Episodes end 16-20
       // times a minute at max rate, so syncing per run meant a network
       // write mid-search for a champion that is still being measured.
       // Publishing on the way out means what we publish is the state the

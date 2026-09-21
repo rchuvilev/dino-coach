@@ -382,3 +382,28 @@ describe("an imported champion must earn its bar locally", () => {
     expect(stored.champion.mean).toBe(1500);
   });
 });
+
+describe("an imported champion is not our score until measured here", () => {
+  test("REGRESSION: fromPool with no local runs contributes no score", () => {
+    // Measured live: fromPool true, localRuns 0, this device's own best was
+    // 1220pts, yet quality() returned the imported 2350 and the UI claimed
+    // "yours 2350pts". That republishes another device's number as ours.
+    expect(share.quality({
+      champion: { mean: 2350, best: 2900, runs: 6, fromPool: true, localRuns: 0, localMean: 0 },
+      ledger: [],
+    })).toBeNull();
+  });
+
+  test("once measured locally it ranks on the LOCAL mean", () => {
+    expect(share.quality({
+      champion: { mean: 2350, best: 2900, runs: 9, fromPool: true, localRuns: 3, localMean: 1400 },
+      ledger: [],
+    })).toBe(1400);
+  });
+
+  test("a locally evolved champion is unaffected", () => {
+    expect(share.quality({
+      champion: { mean: 1800, best: 2100, runs: 4 }, ledger: [],
+    })).toBe(1800);
+  });
+});

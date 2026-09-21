@@ -2712,7 +2712,9 @@ function quality(evolveState) {
   const ch = evolveState && evolveState.champion;
   if (!isObj(ch))
     return null;
-  const mean = isNum(ch.mean) ? ch.mean : ch.best || 0;
+  if (ch.fromPool && (ch.localRuns || 0) < MIN_RUNS)
+    return null;
+  const mean = ch.fromPool && isNum(ch.localMean) && (ch.localRuns || 0) >= MIN_RUNS ? ch.localMean : isNum(ch.mean) ? ch.mean : ch.best || 0;
   if (!(mean > 0))
     return null;
   if (isNum(ch.best) && ch.best > 0 && mean > ch.best + 1)
@@ -3017,10 +3019,6 @@ function installAutoPush(log) {
       }).catch(() => {});
     } catch {}
   };
-  document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "hidden")
-      fire();
-  });
   window.addEventListener("pagehide", fire);
   return true;
 }

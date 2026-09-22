@@ -25,7 +25,14 @@
 
 const KEY = "dino:best:v1";
 const SCHEMA = 1;          // bump when the payload shape changes incompatibly
-const MIN_RUNS = 3;        // a mean over fewer runs is still mostly luck
+// One measured run is enough to publish, by request. This is a deliberate
+// trade: the project measured that a single run is noisy (one genome re-run
+// 12 times spanned 6930..48436), so a lucky draw can now reach the pool and
+// briefly outrank a better policy. What makes that tolerable is that the
+// receiving side no longer trusts an imported score - an adopted champion
+// must re-earn its bar locally before it can block anything - so a lucky
+// entry is displaced as soon as any client measures it honestly.
+const MIN_RUNS = 1;
 const MAX_BYTES = 400000;  // Upstash free tier allows 1MB/entry; stay well under
 const MLP_DIM = 384;       // feature width the model is built for
 

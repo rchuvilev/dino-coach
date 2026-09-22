@@ -18,7 +18,7 @@ src = open('/var/minis/workspace/dino-viewer/share.js').read()
 m = re.search(r'const CAS_LUA =\s*(.*?);\n\nexport async function pushIfBetter', src, re.S)
 parts = re.findall(r'"((?:[^"\\]|\\.)*)"', m.group(1))
 CAS = "".join(p.encode().decode('unicode_escape') for p in parts)
-SCHEMA, MIN_RUNS = "1", "3"
+SCHEMA, MIN_RUNS = "1", "1"
 
 def call(args, tok=RW):
     req = urllib.request.Request(URL, data=json.dumps(args).encode(), method="POST",
@@ -28,7 +28,7 @@ def call(args, tok=RW):
     except urllib.error.HTTPError as e:
         return {"error": f"HTTP{e.code}", "body": e.read().decode()[:120]}
 
-def publish(score, runs=5, tok=RW, schema=1):
+def publish(score, runs=2, tok=RW, schema=1):
     payload = {
         "v": schema, "score": score, "best": score + 300, "runs": runs,
         "edition": f"e{score}", "at": 1700000000000,
@@ -77,8 +77,10 @@ print("scenario 7: structurally wrong value (no genome) is healed")
 call(["SET", KEY, json.dumps({"v": 1, "score": 999999, "runs": 9, "evolve": {}})])
 check("no genome -> healed(2)", publish(160).get("result"), 2)
 
-print("scenario 8: under-measured incumbent is not allowed to block")
-call(["SET", KEY, json.dumps({"v": 1, "score": 999999, "runs": 1,
+print("scenario 8: an UNMEASURED incumbent is not allowed to block")
+# MIN_RUNS is 1, so runs:1 is now a legitimate entry. runs:0 is the
+# unmeasured case that must still be treated as corrupt.
+call(["SET", KEY, json.dumps({"v": 1, "score": 999999, "runs": 0,
       "evolve": {"champion": {"g": {"loA": 1}}}})])
 check("runs<MIN -> healed(2)", publish(170).get("result"), 2)
 

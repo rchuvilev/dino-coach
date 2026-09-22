@@ -80,10 +80,20 @@ describe("validate rejects anything malformed", () => {
     expect(r.reason).toContain("disagrees");
   });
 
-  test("REGRESSION: too few runs is rejected - a mean over 1 run is luck", () => {
-    const p = goodPayload({ runs: 1 });
-    p.evolve.champion.runs = 1;
+  test("REGRESSION: a champion with ZERO measured runs is rejected", () => {
+    // MIN_RUNS is 1 by request: one measured run may publish. Zero still
+    // cannot - an unmeasured genome has no score to rank.
+    const p = goodPayload({ runs: 0 });
+    p.evolve.champion.runs = 0;
     expect(share.validate(p).valid).toBe(false);
+  });
+
+  test("a single measured run IS publishable", () => {
+    const p = goodPayload({ runs: 1, score: 1500, best: 1500 });
+    p.evolve.champion.runs = 1;
+    p.evolve.champion.mean = 1500;
+    p.evolve.champion.best = 1500;
+    expect(share.validate(p).valid).toBe(true);
   });
 
   test("REGRESSION: an MLP of the wrong width is rejected", () => {
@@ -109,9 +119,13 @@ describe("quality ranks by mean, never by the lucky record", () => {
     expect(q).toBe(500);
   });
 
-  test("REGRESSION: refuses to rank a champion with too few runs", () => {
-    // The measured failure: runs:1 best:1466 froze an unbeatable bar.
-    expect(share.quality({ champion: { mean: 1466, best: 1466, runs: 1 } })).toBeNull();
+  test("REGRESSION: refuses to rank an UNMEASURED champion", () => {
+    // runs:0 has no measurement behind it at all.
+    expect(share.quality({ champion: { mean: 1466, best: 1466, runs: 0 } })).toBeNull();
+  });
+
+  test("one measured run now ranks", () => {
+    expect(share.quality({ champion: { mean: 1466, best: 1466, runs: 1 } })).toBe(1466);
   });
 
   test("missing champion yields null rather than throwing", () => {
@@ -162,9 +176,9 @@ describe("snapshot refuses to publish junk", () => {
     expect(share.snapshot()).toBeNull();
   });
 
-  test("REGRESSION: refuses to publish a champion with too few runs", () => {
+  test("REGRESSION: refuses to publish an unmeasured champion", () => {
     store.setItem("dino-evolve-v1", JSON.stringify({
-      champion: { g: { loA: 25, loB: -1, widthA: 30, widthB: -1, duck: 30 }, mean: 5000, best: 5000, runs: 1 },
+      champion: { g: { loA: 25, loB: -1, widthA: 30, widthB: -1, duck: 30 }, mean: 5000, best: 5000, runs: 0 },
     }));
     expect(share.snapshot()).toBeNull();
   });
@@ -202,25 +216,29 @@ describe("quality accepts corroborated champions (measured: 96% never reach 3 ru
     expect(q).toBe(1400);
   });
 
-  test("REGRESSION: a champion with NO corroboration is still refused", () => {
-    expect(share.quality({ champion: { mean: 5000, best: 5000, runs: 1 }, ledger: [] })).toBeNull();
+  test("REGRESSION: an unmeasured champion is refused even with a ledger", () => {
+    expect(share.quality({
+      champion: { mean: 5000, best: 5000, runs: 0 },
+      ledger: [{ hash: "a", best: 1 }, { hash: "b", best: 2 }, { hash: "c", best: 3 }],
+    })).toBeNull();
   });
 
-  test("REGRESSION: a thin ledger does not corroborate", () => {
-    const q = share.quality({
-      champion: { mean: 5000, best: 5000, runs: 1 },
-      ledger: [{ hash: "a", best: 10 }, { hash: "b", best: 20 }],
-    });
-    expect(q).toBeNull();
+  test("an impossible mean is refused regardless of run count", () => {
+    // mean 5000 with best 900 cannot happen; this guard is independent of
+    // MIN_RUNS and must survive lowering it.
+    expect(share.quality({
+      champion: { mean: 5000, best: 900, runs: 1 }, ledger: [],
+    })).toBeNull();
   });
 
-  test("REGRESSION: ledger entries without a score do not count", () => {
-    // Guards against padding the ledger with unscored rows to force a publish.
-    const q = share.quality({
-      champion: { mean: 5000, best: 5000, runs: 1 },
-      ledger: [{ edition: "a" }, { edition: "b" }, { edition: "c" }],
-    });
-    expect(q).toBeNull();
+  test("an imported champion still must re-earn its bar locally", () => {
+    // This is what makes MIN_RUNS=1 safe: a lucky entry that reaches the
+    // pool cannot block anyone, because the receiver refuses to treat an
+    // imported score as its own until it has measured it here.
+    expect(share.quality({
+      champion: { mean: 5000, best: 5200, runs: 1, fromPool: true, localRuns: 0 },
+      ledger: [],
+    })).toBeNull();
   });
 
   test("a zero or negative mean is never publishable", () => {

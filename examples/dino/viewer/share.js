@@ -371,6 +371,7 @@ export async function pullIfBetter() {
 const CAS_LUA =
   "local cur = redis.call('GET', KEYS[1]) " +
   "local corrupt = 0 " +
+  "local prev = 0 " +
   "if cur then " +
   // Decode failures and shape violations are BOTH corruption. Treating them
   // as 'absent' is what makes the key self-healing: without this a single
@@ -386,13 +387,14 @@ const CAS_LUA =
   "         or type(o.evolve.champion.g) ~= 'table' then corrupt = 1 " +
   "  end " +
   // Only a VALID incumbent may block the write.
-  "  if corrupt == 0 and tonumber(o.score) >= tonumber(ARGV[2]) then return 0 end " +
+  "  if corrupt == 0 and tonumber(o.score) >= tonumber(ARGV[2]) then return {0, 0} end " +
+  "  if corrupt == 0 then prev = math.floor(tonumber(o.score)) end " +
   "end " +
   "redis.call('SET', KEYS[1], ARGV[1]) " +
   // 2 distinguishes 'healed a corrupt value' from 2 plain publish, so the
   // client can report it instead of silently masking data loss.
-  "if corrupt == 1 then return 2 end " +
-  "return 1";
+  "if corrupt == 1 then return {2, prev} end " +
+  "return {1, prev}";
 
 export async function pushIfBetter() {
   if (!cfg().enabled) return { ok: false, why: "not configured" };
@@ -400,13 +402,19 @@ export async function pushIfBetter() {
   if (!local) return { ok: false, why: `no publishable snapshot (needs ${MIN_RUNS}+ runs)` };
   const r = await redis(["EVAL", CAS_LUA, "1", KEY, JSON.stringify(local), String(local.score), String(SCHEMA), String(MIN_RUNS)]);
   if (!r.ok) return { ok: false, why: r.code, detail: r.detail, localQ: local.score };
-  if (r.result === 2) {
-    return { ok: true, why: "replaced corrupt remote", healed: true, localQ: local.score };
+  // [code, previousScore]; tolerate the old bare-number shape from a client
+  // still running a cached build.
+  const code = Array.isArray(r.result) ? Number(r.result[0]) : Number(r.result);
+  const prev = Array.isArray(r.result) ? Number(r.result[1]) || 0 : 0;
+  if (code === 2) {
+    return { ok: true, why: "replaced corrupt remote", healed: true,
+             localQ: local.score, prevQ: prev };
   }
   return {
-    ok: r.result === 1,
-    why: r.result === 1 ? "published" : "remote is as good or better",
+    ok: code === 1,
+    why: code === 1 ? "published" : "remote is as good or better",
     localQ: local.score,
+    prevQ: prev,
   };
 }
 
@@ -556,9 +564,11 @@ export function installAutoPush(log) {
         .then((r) => (r.ok ? r.json() : null))
         .then((j) => {
           if (!j) return;
-          if (j.result === 1 || j.result === 2) {
-            report("published", { why: "published", localQ: local.score });
-            if (log) log(`shared best published · ${local.score}pts avg${j.result === 2 ? " (replaced corrupt entry)" : ""}`);
+          const code = Array.isArray(j.result) ? Number(j.result[0]) : Number(j.result);
+          const prev = Array.isArray(j.result) ? Number(j.result[1]) || 0 : 0;
+          if (code === 1 || code === 2) {
+            report("published", { why: "published", localQ: local.score, prevQ: prev });
+            if (log) log(`shared best published · ${local.score}pts avg${code === 2 ? " (replaced corrupt entry)" : ""}`);
           } else {
             // Refused: the pool is ahead, so adopt it rather than leave
             // this browser behind until the next reload.

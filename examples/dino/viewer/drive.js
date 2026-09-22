@@ -1301,10 +1301,18 @@ function showToast(msg, ms = 7000) {
   toastTimer = setTimeout(() => el.classList.remove("on"), ms);
 }
 
-const PUBLISH_TOAST =
-  "🎉 You've just updated best resulting model training! " +
-  "it is now shared on remote for future evolvement. " +
-  "Thank You for teaching me!🦖🙏";
+/** Celebration text. `prev` is the score this publish REPLACED, reported by
+ *  the CAS script itself so the two numbers cannot disagree with what the
+ *  database actually holds. A first publish into an empty pool has no
+ *  predecessor, so it reads "0 pts".*/
+function publishToastText(prev, next) {
+  const from = Math.max(0, Math.round(prev || 0));
+  const to = Math.round(next || 0);
+  return "🎉 You've just updated best resulting model training with " +
+    from + " pts -> 🏆 " + to + " pts! " +
+    "it is now shared on remote for future evolvement. " +
+    "Thank You for teaching me!🦖🙏";
+}
 
 let poolView = { state: "idle", best: null, why: "", syncedAt: 0, edition: "" };
 
@@ -1345,7 +1353,9 @@ function renderPool() {
 function notePool(kind, r) {
   // Only a genuine publish earns the celebration - adopting someone else's
   // model is not the user's achievement.
-  if (kind === "published") showToast(PUBLISH_TOAST);
+  if (kind === "published") {
+    showToast(publishToastText(r && r.prevQ, r && r.localQ));
+  }
   poolView.state = kind;
   if (r && typeof r.remoteQ === "number") poolView.best = r.remoteQ;
   if (r && r.edition) poolView.edition = r.edition;

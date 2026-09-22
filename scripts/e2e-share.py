@@ -40,6 +40,11 @@ def publish(score, runs=2, tok=RW, schema=1):
     return call(["EVAL", CAS, "1", KEY, json.dumps(payload), str(score), SCHEMA, str(MIN_RUNS)], tok)
 
 results = []
+def code_of(res):
+    """The script returns [code, prevScore]; older builds returned a bare int."""
+    r = res.get("result") if isinstance(res, dict) else res
+    return int(r[0]) if isinstance(r, list) else (int(r) if r is not None else None)
+
 def check(name, got, want):
     ok = got == want
     results.append((ok, name, got, want))
@@ -47,42 +52,42 @@ def check(name, got, want):
 
 print("scenario 1: empty key -> first publish wins")
 call(["DEL", KEY])
-check("publish into empty", publish(1000).get("result"), 1)
+check("publish into empty", code_of(publish(1000)), 1)
 cur = json.loads(call(["GET", KEY])["result"])
 check("stored score is 1000", cur["score"], 1000)
 
 print("scenario 2: weaker publish is REFUSED")
-check("weaker refused", publish(500).get("result"), 0)
+check("weaker refused", code_of(publish(500)), 0)
 check("value unchanged", json.loads(call(["GET", KEY])["result"])["score"], 1000)
 
 print("scenario 3: stronger publish REPLACES")
-check("stronger accepted", publish(2000).get("result"), 1)
+check("stronger accepted", code_of(publish(2000)), 1)
 check("value updated", json.loads(call(["GET", KEY])["result"])["score"], 2000)
 
 print("scenario 4: equal score is refused (no pointless churn)")
-check("equal refused", publish(2000).get("result"), 0)
+check("equal refused", code_of(publish(2000)), 0)
 
 print("scenario 5: CORRUPT value is healed, not blocking")
 call(["SET", KEY, "{this is not json"])
-check("corrupt -> healed(2)", publish(100).get("result"), 2)
+check("corrupt -> healed(2)", code_of(publish(100)), 2)
 check("healed with client data", json.loads(call(["GET", KEY])["result"])["score"], 100)
 
 print("scenario 6: value of WRONG SCHEMA is treated as corrupt")
 call(["SET", KEY, json.dumps({"v": 99, "score": 999999, "runs": 9,
       "evolve": {"champion": {"g": {}}}})])
-check("wrong schema -> healed(2)", publish(150).get("result"), 2)
+check("wrong schema -> healed(2)", code_of(publish(150)), 2)
 check("replaced despite huge score", json.loads(call(["GET", KEY])["result"])["score"], 150)
 
 print("scenario 7: structurally wrong value (no genome) is healed")
 call(["SET", KEY, json.dumps({"v": 1, "score": 999999, "runs": 9, "evolve": {}})])
-check("no genome -> healed(2)", publish(160).get("result"), 2)
+check("no genome -> healed(2)", code_of(publish(160)), 2)
 
 print("scenario 8: an UNMEASURED incumbent is not allowed to block")
 # MIN_RUNS is 1, so runs:1 is now a legitimate entry. runs:0 is the
 # unmeasured case that must still be treated as corrupt.
 call(["SET", KEY, json.dumps({"v": 1, "score": 999999, "runs": 0,
       "evolve": {"champion": {"g": {"loA": 1}}}})])
-check("runs<MIN -> healed(2)", publish(170).get("result"), 2)
+check("runs<MIN -> healed(2)", code_of(publish(170)), 2)
 
 print("scenario 9: read-only token CANNOT publish")
 r = publish(5000, tok=RO)
@@ -99,7 +104,7 @@ big = {"v": 1, "score": 3000, "best": 3200, "runs": 6, "edition": "big", "at": 1
        "mlp": {"dim": 384, "w": [0.1] * 2000}, "knn": {"xs": [[0.5] * 8] * 400}}
 blob = json.dumps(big)
 r = call(["EVAL", CAS, "1", KEY, blob, "3000", SCHEMA, str(MIN_RUNS)])
-check(f"{len(blob)//1024}KB payload accepted", r.get("result"), 1)
+check(f"{len(blob)//1024}KB payload accepted", code_of(r), 1)
 
 call(["DEL", KEY])
 bad = [r for r in results if not r[0]]

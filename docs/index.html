@@ -2889,7 +2889,7 @@ async function pullIfBetter() {
     return { ok: false, why: ins.code, detail: ins.detail, localQ, remoteQ: remote.score };
   return { ok: true, why: "installed remote", localQ, remoteQ: remote.score, edition: remote.edition };
 }
-var CAS_LUA = "local cur = redis.call('GET', KEYS[1]) " + "local corrupt = 0 " + "if cur then " + "  local ok, o = pcall(cjson.decode, cur) " + "  if not ok or type(o) ~= 'table' then corrupt = 1 " + "  elseif tonumber(o.v) ~= tonumber(ARGV[3]) then corrupt = 1 " + "  elseif not tonumber(o.score) or tonumber(o.score) <= 0 then corrupt = 1 " + "  elseif not tonumber(o.runs) or tonumber(o.runs) < tonumber(ARGV[4]) then corrupt = 1 " + "  elseif type(o.evolve) ~= 'table' or type(o.evolve.champion) ~= 'table' " + "         or type(o.evolve.champion.g) ~= 'table' then corrupt = 1 " + "  end " + "  if corrupt == 0 and tonumber(o.score) >= tonumber(ARGV[2]) then return 0 end " + "end " + "redis.call('SET', KEYS[1], ARGV[1]) " + "if corrupt == 1 then return 2 end " + "return 1";
+var CAS_LUA = "local cur = redis.call('GET', KEYS[1]) " + "local corrupt = 0 " + "local prev = 0 " + "if cur then " + "  local ok, o = pcall(cjson.decode, cur) " + "  if not ok or type(o) ~= 'table' then corrupt = 1 " + "  elseif tonumber(o.v) ~= tonumber(ARGV[3]) then corrupt = 1 " + "  elseif not tonumber(o.score) or tonumber(o.score) <= 0 then corrupt = 1 " + "  elseif not tonumber(o.runs) or tonumber(o.runs) < tonumber(ARGV[4]) then corrupt = 1 " + "  elseif type(o.evolve) ~= 'table' or type(o.evolve.champion) ~= 'table' " + "         or type(o.evolve.champion.g) ~= 'table' then corrupt = 1 " + "  end " + "  if corrupt == 0 and tonumber(o.score) >= tonumber(ARGV[2]) then return {0, 0} end " + "  if corrupt == 0 then prev = math.floor(tonumber(o.score)) end " + "end " + "redis.call('SET', KEYS[1], ARGV[1]) " + "if corrupt == 1 then return {2, prev} end " + "return {1, prev}";
 async function pushIfBetter() {
   if (!cfg().enabled)
     return { ok: false, why: "not configured" };
@@ -2899,13 +2899,22 @@ async function pushIfBetter() {
   const r = await redis(["EVAL", CAS_LUA, "1", KEY, JSON.stringify(local), String(local.score), String(SCHEMA), String(MIN_RUNS)]);
   if (!r.ok)
     return { ok: false, why: r.code, detail: r.detail, localQ: local.score };
-  if (r.result === 2) {
-    return { ok: true, why: "replaced corrupt remote", healed: true, localQ: local.score };
+  const code = Array.isArray(r.result) ? Number(r.result[0]) : Number(r.result);
+  const prev = Array.isArray(r.result) ? Number(r.result[1]) || 0 : 0;
+  if (code === 2) {
+    return {
+      ok: true,
+      why: "replaced corrupt remote",
+      healed: true,
+      localQ: local.score,
+      prevQ: prev
+    };
   }
   return {
-    ok: r.result === 1,
-    why: r.result === 1 ? "published" : "remote is as good or better",
-    localQ: local.score
+    ok: code === 1,
+    why: code === 1 ? "published" : "remote is as good or better",
+    localQ: local.score,
+    prevQ: prev
   };
 }
 var reloadHook = () => {};
@@ -3018,10 +3027,12 @@ function installAutoPush(log) {
       }).then((r) => r.ok ? r.json() : null).then((j) => {
         if (!j)
           return;
-        if (j.result === 1 || j.result === 2) {
-          report("published", { why: "published", localQ: local.score });
+        const code = Array.isArray(j.result) ? Number(j.result[0]) : Number(j.result);
+        const prev = Array.isArray(j.result) ? Number(j.result[1]) || 0 : 0;
+        if (code === 1 || code === 2) {
+          report("published", { why: "published", localQ: local.score, prevQ: prev });
           if (log)
-            log(`shared best published · ${local.score}pts avg${j.result === 2 ? " (replaced corrupt entry)" : ""}`);
+            log(`shared best published · ${local.score}pts avg${code === 2 ? " (replaced corrupt entry)" : ""}`);
         } else {
           pullIfBetter().then((p) => {
             if (p && p.ok) {
@@ -5145,7 +5156,11 @@ function showToast(msg, ms = 7000) {
     clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.classList.remove("on"), ms);
 }
-var PUBLISH_TOAST = "\uD83C\uDF89 You've just updated best resulting model training! " + "it is now shared on remote for future evolvement. " + "Thank You for teaching me!\uD83E\uDD96\uD83D\uDE4F";
+function publishToastText(prev, next) {
+  const from = Math.max(0, Math.round(prev || 0));
+  const to = Math.round(next || 0);
+  return "\uD83C\uDF89 You've just updated best resulting model training with " + from + " pts -> \uD83C\uDFC6 " + to + " pts! " + "it is now shared on remote for future evolvement. " + "Thank You for teaching me!\uD83E\uDD96\uD83D\uDE4F";
+}
 var poolView = { state: "idle", best: null, why: "", syncedAt: 0, edition: "" };
 function renderPool() {
   const st = $("pool-state");
@@ -5181,8 +5196,9 @@ function renderPool() {
     w.textContent = poolView.why || "—";
 }
 function notePool(kind, r) {
-  if (kind === "published")
-    showToast(PUBLISH_TOAST);
+  if (kind === "published") {
+    showToast(publishToastText(r && r.prevQ, r && r.localQ));
+  }
   poolView.state = kind;
   if (r && typeof r.remoteQ === "number")
     poolView.best = r.remoteQ;

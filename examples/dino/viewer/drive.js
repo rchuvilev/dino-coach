@@ -1042,6 +1042,17 @@ function frame() {
           { edition: c.edition || "initial", hash: c.hash, best: c.best,
             runs: c.runs, result: pts, promoted: verdict.promoted },
         );
+      // A promotion IS the better result. Sync here rather than waiting for
+      // the generation to close, which is up to 8 episodes later. syncNow
+      // short-circuits when the publishable quality has not changed, so
+      // hooking the exact improvement event adds no traffic of its own.
+      if (verdict && verdict.promoted) {
+        share.syncNow(log, true).then((r) => {
+          if (!r) return;
+          if (r.ok && r.why === "published") notePool("published", r);
+          else if (r.ok) notePool("adopted", r);
+        }).catch(() => { /* never interrupt evolution */ });
+      }
       }
       // persist the learned model with the episode, not only at generation
       // close - otherwise a short session looks like nothing was learned
@@ -1097,6 +1108,17 @@ function frame() {
           idx = 0;
           drawChart();
           renderTable();
+          // A closed generation is a natural "this run finished" boundary -
+          // the champion has just been ranked against a full population, so
+          // it is exactly the moment worth sharing. Stop covers the manual
+          // case; without this, a session left running published nothing
+          // until the tab was closed.
+          share.syncNow(log, true).then((r) => {
+            if (!r) return;
+            if (r.ok && r.why === "published") notePool("published", r);
+            else if (r.ok) notePool("adopted", r);
+            else notePool(r.why === "unchanged" ? "synced" : "idle", r);
+          }).catch(() => { /* a failed sync must not interrupt evolution */ });
         }
       }
     }

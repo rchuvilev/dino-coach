@@ -4940,6 +4940,16 @@ function frame() {
           result: pts,
           promoted: verdict.promoted
         });
+        if (verdict && verdict.promoted) {
+          syncNow(log, true).then((r) => {
+            if (!r)
+              return;
+            if (r.ok && r.why === "published")
+              notePool("published", r);
+            else if (r.ok)
+              notePool("adopted", r);
+          }).catch(() => {});
+        }
       }
       saveKnn();
       saveAnalysis();
@@ -4968,6 +4978,16 @@ function frame() {
           idx = 0;
           drawChart();
           renderTable();
+          syncNow(log, true).then((r) => {
+            if (!r)
+              return;
+            if (r.ok && r.why === "published")
+              notePool("published", r);
+            else if (r.ok)
+              notePool("adopted", r);
+            else
+              notePool(r.why === "unchanged" ? "synced" : "idle", r);
+          }).catch(() => {});
         }
       }
     }

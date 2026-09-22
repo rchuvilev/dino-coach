@@ -42,9 +42,12 @@ tfjs = open('tf.min.js').read()
 knnlib = open('knn-classifier.min.js').read()
 html = html.replace('<script src="tf.min.js"></script>', '<script>\n' + tfjs + '\n</script>')
 html = html.replace('<script src="knn-classifier.min.js"></script>', '<script>\n' + knnlib + '\n</script>')
-html = re.sub(r'<script src="clock\.js[^"]*"></script>', '<script>\n' + clock + '\n</script>', html)
-html = re.sub(r'<script src="game\.js[^"]*"></script>', '<script>\n' + game + '\n</script>', html)
-html = re.sub(r'<script type="module" src="drive\.js[^"]*"></script>', '<script>\n' + bundle + '\n</script>', html)
+# NOTE: a lambda replacement is required. A plain string replacement makes
+# re.sub interpret backslashes as group references, so a bundled \uXXXX
+# escape (emoji, any non-ASCII literal) raises "bad escape \u".
+html = re.sub(r'<script src="clock\.js[^"]*"></script>', lambda _m: '<script>\n' + clock + '\n</script>', html)
+html = re.sub(r'<script src="game\.js[^"]*"></script>', lambda _m: '<script>\n' + game + '\n</script>', html)
+html = re.sub(r'<script type="module" src="drive\.js[^"]*"></script>', lambda _m: '<script>\n' + bundle + '\n</script>', html)
 
 open(out, 'w').write(html)
 print(f'{out}: {len(html)//1024} KB')

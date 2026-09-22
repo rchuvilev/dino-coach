@@ -62,6 +62,13 @@ td.n{text-align:right;font-variant-numeric:tabular-nums}
 tr.best td{color:var(--ok)}
 tr.ctrl td{color:var(--warn)}
 #log{font-size:10px;color:var(--dim);max-height:40px;overflow:auto;white-space:pre-wrap;margin-top:4px}
+.toast{position:fixed;left:50%;bottom:18px;transform:translateX(-50%) translateY(120%);
+  max-width:min(92vw,460px);padding:12px 16px;border-radius:10px;
+  background:linear-gradient(180deg,#123024,#0d2119);border:1px solid #2f7d55;
+  color:#d6ffe9;font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;
+  box-shadow:0 8px 28px rgba(0,0,0,.45);z-index:999;opacity:0;
+  transition:transform .32s cubic-bezier(.2,.9,.3,1.2),opacity .32s;pointer-events:none}
+.toast.on{transform:translateX(-50%) translateY(0);opacity:1}
 </style>
 <script>window.__DINO_SHARE={url:"https://fluent-foxhound-289270.upstash.io",token:"gQAAAAAABGn2AAIgcDE2Mzc5MmJiZjNlZDA0ZWMwYmUzMjE0NTYwOTQ2NGNhYQ"};</script>
 </head>
@@ -5127,6 +5134,18 @@ function verifyLiveness() {
 pop = seedPopulation();
 renderTable();
 drawChart();
+var toastTimer = null;
+function showToast(msg, ms = 7000) {
+  const el = $("toast");
+  if (!el)
+    return;
+  el.textContent = msg;
+  el.classList.add("on");
+  if (toastTimer)
+    clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove("on"), ms);
+}
+var PUBLISH_TOAST = "\uD83C\uDF89 You've just updated best resulting model training! " + "it is now shared on remote for future evolvement. " + "Thank You for teaching me!\uD83E\uDD96\uD83D\uDE4F";
 var poolView = { state: "idle", best: null, why: "", syncedAt: 0, edition: "" };
 function renderPool() {
   const st = $("pool-state");
@@ -5162,6 +5181,8 @@ function renderPool() {
     w.textContent = poolView.why || "—";
 }
 function notePool(kind, r) {
+  if (kind === "published")
+    showToast(PUBLISH_TOAST);
   poolView.state = kind;
   if (r && typeof r.remoteQ === "number")
     poolView.best = r.remoteQ;
@@ -5627,5 +5648,6 @@ setTimeout(() => {
 }, 250);
 
 </script>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
 </body>
 </html>

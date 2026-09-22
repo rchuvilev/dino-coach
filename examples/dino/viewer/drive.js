@@ -1282,6 +1282,30 @@ drawChart();
  * being unanswerable without DevTools. This shows the live comparison that
  * actually decides publish-vs-adopt.
  */
+
+/**
+ * Celebration toast for a successful publish.
+ *
+ * Deliberately NOT window.alert(): the drive loop runs thousands of frames
+ * a second and a modal blocks the thread until dismissed, which would stall
+ * evolution mid-episode and, at max rate, lose a generation's work. This is
+ * non-blocking and self-dismissing.
+ */
+let toastTimer = null;
+function showToast(msg, ms = 7000) {
+  const el = $("toast");
+  if (!el) return;
+  el.textContent = msg;
+  el.classList.add("on");
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove("on"), ms);
+}
+
+const PUBLISH_TOAST =
+  "🎉 You've just updated best resulting model training! " +
+  "it is now shared on remote for future evolvement. " +
+  "Thank You for teaching me!🦖🙏";
+
 let poolView = { state: "idle", best: null, why: "", syncedAt: 0, edition: "" };
 
 function renderPool() {
@@ -1319,6 +1343,9 @@ function renderPool() {
 
 /** Record a sync outcome for the panel, then repaint. */
 function notePool(kind, r) {
+  // Only a genuine publish earns the celebration - adopting someone else's
+  // model is not the user's achievement.
+  if (kind === "published") showToast(PUBLISH_TOAST);
   poolView.state = kind;
   if (r && typeof r.remoteQ === "number") poolView.best = r.remoteQ;
   if (r && r.edition) poolView.edition = r.edition;

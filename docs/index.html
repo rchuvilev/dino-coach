@@ -2936,12 +2936,14 @@ function report(kind, r) {
 var lastSyncedQuality = null;
 var sincePoolCheck = 0;
 var POOL_CHECK_EVERY = 5;
-async function syncNow(log, force = false) {
+async function syncNow(log, force = false, allowAdopt = false) {
   if (!cfg().enabled)
     return { ok: false, why: "not configured" };
   const local = snapshot();
   const q = local ? local.score : null;
   if (q === null) {
+    if (!allowAdopt)
+      return { ok: false, why: "nothing publishable" };
     const pulled = await pullIfBetter();
     if (pulled.ok) {
       reloadHook();
@@ -2955,6 +2957,8 @@ async function syncNow(log, force = false) {
     if (sincePoolCheck < POOL_CHECK_EVERY)
       return { ok: false, why: "unchanged" };
     sincePoolCheck = 0;
+    if (!allowAdopt)
+      return { ok: false, why: "unchanged" };
     const pulled = await pullIfBetter();
     if (pulled.ok) {
       reloadHook();
@@ -2977,6 +2981,10 @@ async function syncNow(log, force = false) {
     }
     if (res.why === "remote is as good or better") {
       lastSyncedQuality = q;
+      if (!allowAdopt) {
+        report("ahead", res);
+        return res;
+      }
       const pulled = await pullIfBetter();
       if (pulled.ok) {
         reloadHook();
@@ -3000,13 +3008,6 @@ function installAutoPush(log) {
   const fire = () => {
     const local = snapshot();
     if (!local) {
-      pullIfBetter().then((r) => {
-        if (r && r.ok) {
-          reloadHook();
-          if (log)
-            log(`shared best adopted · ${r.remoteQ}pts avg${r.edition ? " · " + r.edition : ""}`);
-        }
-      }).catch(() => {});
       if (log && !warnedUnpublishable) {
         warnedUnpublishable = true;
         let runs = 0;
@@ -3033,14 +3034,6 @@ function installAutoPush(log) {
           report("published", { why: "published", localQ: local.score, prevQ: prev });
           if (log)
             log(`shared best published · ${local.score}pts avg${code === 2 ? " (replaced corrupt entry)" : ""}`);
-        } else {
-          pullIfBetter().then((p) => {
-            if (p && p.ok) {
-              reloadHook();
-              if (log)
-                log(`shared best adopted · ${p.remoteQ}pts avg${p.edition ? " · " + p.edition : ""}`);
-            }
-          }).catch(() => {});
         }
       }).catch(() => {});
     } catch {}
@@ -5650,6 +5643,20 @@ if (resetBtn) {
     renderTable();
     drawChart();
     log("population reset");
+    syncNow(log, true, true).then((r) => {
+      if (!r)
+        return;
+      if (r.ok && r.why === "published")
+        notePool("published", r);
+      else if (r.ok) {
+        reloadFromStorage();
+        loadAnalysis();
+        loadMlp();
+        loadKnn();
+        renderTable();
+        notePool("adopted", r);
+      }
+    }).catch(() => {});
   };
 }
 setTimeout(() => {

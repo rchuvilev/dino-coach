@@ -1871,6 +1871,16 @@ if (resetBtn) {
     renderTable();
     drawChart();
     log("population reset");
+    // Reset is an explicit "start over", so adopting the pool's best here
+    // is wanted. Everywhere else adoption is destructive and is refused.
+    share.syncNow(log, true, true).then((r) => {
+      if (!r) return;
+      if (r.ok && r.why === "published") notePool("published", r);
+      else if (r.ok) {
+        reloadFromStorage(); loadAnalysis(); loadMlp(); loadKnn(); renderTable();
+        notePool("adopted", r);
+      }
+    }).catch(() => { /* reset must never fail on the network */ });
   };
 }
 

@@ -452,7 +452,7 @@ let lastSyncedQuality = null;
 let sincePoolCheck = 0;
 const POOL_CHECK_EVERY = 5;
 
-export async function syncNow(log, force = false) {
+export async function syncNow(log, force = false, allowAdopt = false) {
   if (!cfg().enabled) return { ok: false, why: "not configured" };
   const local = snapshot();
   const q = local ? local.score : null;
@@ -463,6 +463,7 @@ export async function syncNow(log, force = false) {
   // never picked up at all. Measured: the page logged "pool is empty" while
   // diagnose() could read a 1900pt champion from the same endpoint.
   if (q === null) {
+    if (!allowAdopt) return { ok: false, why: "nothing publishable" };
     const pulled = await pullIfBetter();
     if (pulled.ok) {
       reloadHook();
@@ -477,6 +478,7 @@ export async function syncNow(log, force = false) {
     sincePoolCheck++;
     if (sincePoolCheck < POOL_CHECK_EVERY) return { ok: false, why: "unchanged" };
     sincePoolCheck = 0;
+    if (!allowAdopt) return { ok: false, why: "unchanged" };
     const pulled = await pullIfBetter();
     if (pulled.ok) {
       reloadHook();
@@ -503,6 +505,11 @@ export async function syncNow(log, force = false) {
     // behind the pool immediately benefits instead of waiting for a reload.
     if (res.why === "remote is as good or better") {
       lastSyncedQuality = q;
+      if (!allowAdopt) {
+        // Losing to the pool is not a reason to destroy local training.
+        report("ahead", res);
+        return res;
+      }
       const pulled = await pullIfBetter();
       if (pulled.ok) {
         reloadHook();
@@ -536,14 +543,9 @@ export function installAutoPush(log) {
   const fire = () => {
     const local = snapshot();
     if (!local) {
-      // Nothing to publish - but still ASK the pool, because a tab being
-      // hidden is one of only two moments we sync at all.
-      pullIfBetter().then((r) => {
-        if (r && r.ok) {
-          reloadHook();
-          if (log) log(`shared best adopted · ${r.remoteQ}pts avg${r.edition ? " · " + r.edition : ""}`);
-        }
-      }).catch(() => { /* exit-path failure must be silent */ });
+      // Nothing publishable and we are on the way out. Do NOT adopt here:
+      // adoption wipes all six local keys, and the next page load performs
+      // the pull anyway. Leaving a page should never destroy training.
       if (log && !warnedUnpublishable) {
         warnedUnpublishable = true;
         let runs = 0;
@@ -569,16 +571,9 @@ export function installAutoPush(log) {
           if (code === 1 || code === 2) {
             report("published", { why: "published", localQ: local.score, prevQ: prev });
             if (log) log(`shared best published · ${local.score}pts avg${code === 2 ? " (replaced corrupt entry)" : ""}`);
-          } else {
-            // Refused: the pool is ahead, so adopt it rather than leave
-            // this browser behind until the next reload.
-            pullIfBetter().then((p) => {
-              if (p && p.ok) {
-                reloadHook();
-                if (log) log(`shared best adopted · ${p.remoteQ}pts avg${p.edition ? " · " + p.edition : ""}`);
-              }
-            }).catch(() => {});
           }
+          // A refusal is NOT followed by adoption: that would wipe local
+          // training on the way out, and the next load pulls anyway.
         })
         .catch(() => { /* exit-path failure must be silent */ });
     } catch { /* ignore */ }

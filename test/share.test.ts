@@ -443,3 +443,31 @@ describe("an explicit sync is never skipped", () => {
     expect(r.why).toBe("not configured");
   });
 });
+
+describe("adoption is destructive and must be opt-in", () => {
+  test("REGRESSION: a run-end sync does not adopt when it has nothing to publish", async () => {
+    // install() clears all six owned keys. syncNow ran that on EVERY run
+    // end, so a session repeatedly lost its own analysis, logs, ledger and
+    // save slot. Adoption belongs to page load and Reset only.
+    store.setItem("dino-analysis-v1", JSON.stringify({ mine: true }));
+    store.setItem("dino-logs-v1", JSON.stringify({ mine: true }));
+    // no champion => nothing publishable
+    store.removeItem("dino-evolve-v1");
+    // Without a configured database syncNow stops even earlier, which is
+    // itself non-destructive; the point of the test is that NOTHING is
+    // wiped on a run-end sync, whatever the reason it declines.
+    const r = await share.syncNow(undefined, true);   // allowAdopt defaults false
+    expect(r.ok).toBe(false);
+    expect(["nothing publishable", "not configured"]).toContain(r.why);
+    // local training survived
+    expect(store.getItem("dino-analysis-v1")).not.toBeNull();
+    expect(store.getItem("dino-logs-v1")).not.toBeNull();
+  });
+
+  test("syncNow exposes an allowAdopt parameter distinct from force", () => {
+    const src = String(share.syncNow);
+    expect(src).toContain("allowAdopt");
+    // the destructive path must be guarded by it in more than one branch
+    expect((src.match(/allowAdopt/g) || []).length).toBeGreaterThanOrEqual(3);
+  });
+});

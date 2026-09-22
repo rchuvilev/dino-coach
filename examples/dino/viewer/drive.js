@@ -1309,6 +1309,29 @@ function notePool(kind, r) {
   renderPool();
 }
 
+
+// Diagnostic probe: ask the model about a clearly-clearable jump and a
+// clearly-impossible one. A spread near zero means the model is not
+// discriminating and its veto/rescue paths are noise.
+if (typeof window !== "undefined") {
+  window.__dinoModel = {
+    stats: () => ({ trained: mlp.samplesTrained, lastLoss: mlp.lastLoss }),
+    probe() {
+      const good = featurize({ gap: 55, speed: 7, width: 17, next: null,
+                               high: false, wide: false, arcVel: 12 });
+      const bad = featurize({ gap: 8, speed: 12, width: 75, next: null,
+                              high: false, wide: true, arcVel: 7 });
+      const pGood = mlp.predictSync(good);
+      const pBad = mlp.predictSync(bad);
+      return {
+        pGood, pBad,
+        spread: pGood !== null && pBad !== null ? +(pGood - pBad).toFixed(3) : null,
+        trained: mlp.samplesTrained,
+      };
+    },
+  };
+}
+
 let sharedReady = null;
 
 $("run").onclick = async () => {

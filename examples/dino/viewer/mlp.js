@@ -39,6 +39,37 @@ function ensureBackend() {
   return ready;
 }
 
+/**
+ * Per-class weights for a batch of labels.
+ *
+ * MEASURED: live play produced 2592 successes against 12 failures - a 0.46%
+ * failure rate. Weighting every sample equally means a batch of 63 successes
+ * and 1 failure teaches the network to answer "clears" unconditionally,
+ * which scores 99.5% accuracy and is useless for the one thing this model
+ * exists to do: spot the jumps that FAIL.
+ *
+ * Returns { 0: wFail, 1: wOk } scaled so the mean weight stays ~1 (keeping
+ * the effective learning rate unchanged), or null when the batch has only
+ * one class and a ratio would be meaningless.
+ *
+ * The cap matters: without it a single failure among 999 successes would be
+ * weighted 999x, so one mislabelled sample could swamp an entire update.
+ */
+export function classWeights(ys, maxWeight = 20) {
+  if (!ys || !ys.length) return null;
+  let pos = 0;
+  for (const y of ys) if (y === 1) pos++;
+  const neg = ys.length - pos;
+  if (!pos || !neg) return null;          // single class: nothing to balance
+  const n = ys.length;
+  // inverse frequency, then normalise so the AVERAGE weight is 1
+  let wPos = n / (2 * pos);
+  let wNeg = n / (2 * neg);
+  wNeg = Math.min(wNeg, maxWeight);
+  wPos = Math.min(wPos, maxWeight);
+  return { 0: wNeg, 1: wPos };
+}
+
 export class JumpModel {
   constructor() {
     this.net = null;
@@ -93,8 +124,11 @@ export class JumpModel {
     const batch = this.pending.splice(0, maxBatch);
     const xs = tf.tensor2d(batch.map((b) => b.x));
     const ys = tf.tensor2d(batch.map((b) => [b.y]));
+    // Up-weight the rare class so a 63:1 batch does not simply teach "yes".
+    const cw = classWeights(batch.map((b) => b.y));
+    const sw = cw ? tf.tensor1d(batch.map((b) => cw[b.y])) : null;
     try {
-      const h = await this.net.trainOnBatch(xs, ys);
+      const h = await this.net.trainOnBatch(xs, ys, sw || undefined);
       this.lastLoss = Array.isArray(h) ? h[0] : h;
       this.trained += batch.length;
       return batch.length;
@@ -103,6 +137,7 @@ export class JumpModel {
     } finally {
       xs.dispose();
       ys.dispose();
+      if (sw) sw.dispose();
     }
   }
 

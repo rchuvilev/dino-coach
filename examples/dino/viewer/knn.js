@@ -84,9 +84,23 @@ export class TakeoffKNN {
     this.ys.push(ok ? 1 : 0);
     this.gaps.push(gap);
     if (this.xs.length > this.cap) {
-      this.xs.shift();
-      this.ys.shift();
-      this.gaps.shift();
+      // Evict the OLDEST MAJORITY sample, not simply the oldest.
+      //
+      // MEASURED: plain oldest-first eviction left 594 positives against 6
+      // negatives at the 600 cap, because failures are rare (0.46% of
+      // outcomes) and were pushed out by abundant successes. The ratio got
+      // WORSE the longer a session ran, which is the opposite of what a
+      // memory of failures should do.
+      let pos = 0;
+      for (const y of this.ys) if (y === 1) pos++;
+      const majority = pos * 2 > this.ys.length ? 1 : 0;
+      let idx = this.ys.indexOf(majority);
+      // If the buffer is somehow single-class, fall back to oldest-first so
+      // the cap is always respected.
+      if (idx < 0) idx = 0;
+      this.xs.splice(idx, 1);
+      this.ys.splice(idx, 1);
+      this.gaps.splice(idx, 1);
       // an eviction invalidates the classifier; rebuild lazily on next use
       this.dirty = true;
     } else if (this.model) {

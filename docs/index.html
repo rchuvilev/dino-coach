@@ -3404,6 +3404,48 @@ function states(store) {
     set.add(key.split("|")[0]);
   return [...set];
 }
+function mutationBias(store, rnd) {
+  if (!store || typeof store !== "object")
+    return null;
+  const GENE_FOR = {
+    takeoffGap: "loA",
+    ttc: "ttcLo",
+    targetWidth: "wideAdj"
+  };
+  let best = null;
+  for (const state of states(store)) {
+    for (const d of diagnose(store, state)) {
+      const gene = GENE_FOR[d.prop];
+      if (!gene)
+        continue;
+      const sign = d.prop === "targetWidth" ? d.delta < 0 ? 1 : -1 : d.delta > 0 ? 1 : -1;
+      const strength = Math.abs(d.delta) * d.weight;
+      if (!best || strength > best.strength) {
+        best = {
+          gene,
+          sign,
+          delta: d.delta,
+          confidence: d.weight,
+          state,
+          prop: d.prop,
+          strength
+        };
+      }
+    }
+  }
+  if (!best)
+    return null;
+  if (rnd)
+    ;
+  return {
+    gene: best.gene,
+    sign: best.sign,
+    delta: best.delta,
+    confidence: best.confidence,
+    state: best.state,
+    prop: best.prop
+  };
+}
 
 // evolve.js
 var STORE_KEY = "dino-evolve-v1";
@@ -3510,13 +3552,22 @@ function crossover(a, b, rnd) {
   }
   return clampGenome(child);
 }
-function mutate(g, rnd) {
+function mutate(g, rnd, bias) {
   const n = { ...g };
   const boost = typeof S2 !== "undefined" && S2 && S2.mutBoost || 1;
   const heavy = rnd() < 0.15;
   const scale = (heavy ? 3.5 : 1) * boost;
-  const pick = Math.floor(rnd() * 18);
-  const nudge = () => Math.round((rnd() - 0.5) * 30 * scale);
+  const BIAS_GENE = { loA: 0, widthA: 1, duck: 2, ttcLo: 13, wideAdj: 8 };
+  let pick = Math.floor(rnd() * 18);
+  const biasIdx = bias && BIAS_GENE[bias.gene];
+  const biasApplies = bias && biasIdx !== undefined && rnd() < 0.5;
+  if (biasApplies)
+    pick = biasIdx;
+  const dir = biasApplies ? bias.sign : 0;
+  const nudge = () => {
+    const mag = Math.abs((rnd() - 0.5) * 30 * scale);
+    return Math.round(dir ? dir * mag : (rnd() - 0.5) * 30 * scale);
+  };
   const slope = () => +((rnd() - 0.5) * 4 * scale).toFixed(2);
   if (pick === 0)
     n.loA = n.loA + nudge();
@@ -3692,7 +3743,7 @@ function episodesFor(gen) {
 }
 var EPISODES_PER = 1;
 var ELITE = 4;
-function nextCandidate() {
+function nextCandidate(bias) {
   if (!S2.champion) {
     const g = randomGenome(rnd);
     S2.champion = {
@@ -3714,7 +3765,7 @@ function nextCandidate() {
     S2.challenger = null;
     return { g: S2.champion.g, role: "champion", meta: S2.champion };
   }
-  const mutated = mutate(S2.champion.g, rnd);
+  const mutated = mutate(S2.champion.g, rnd, bias);
   const edition = changeHash(S2.champion.g, mutated);
   S2.challenger = {
     g: mutated,
@@ -4461,7 +4512,7 @@ function decide(s, g) {
   return { action: "run", rule: 2 };
 }
 function pickCandidate() {
-  current = nextCandidate();
+  current = nextCandidate(mutationBias(analysis));
   return current;
 }
 function restartEpisode() {

@@ -182,7 +182,13 @@ export function crossover(a, b, rnd) {
   return clampGenome(child);
 }
 
-function mutate(g, rnd) {
+/**
+ * @param bias optional { gene, sign } from Analysis.mutationBias() - which
+ *   gene the measured failures implicate, and which way to move it. When
+ *   absent (the common case: most situations record no failures at all) the
+ *   mutation stays uniformly random, which is the previous behaviour.
+ */
+function mutate(g, rnd, bias) {
   const n = { ...g };
   // 15% of mutations are LARGE. With only small nudges the population never
   // escaped the genome found in generation 1 - measured flat for 27
@@ -194,8 +200,24 @@ function mutate(g, rnd) {
   const boost = (typeof S !== "undefined" && S && S.mutBoost) || 1;
   const heavy = rnd() < 0.15;
   const scale = (heavy ? 3.5 : 1) * boost;
-  const pick = Math.floor(rnd() * 18);
-  const nudge = () => Math.round((rnd() - 0.5) * 30 * scale);
+  // GENE CHOICE. Uniform by default; when failures implicate a specific
+  // gene, take it 50% of the time. Not 100%: a diagnosis drawn from n=8
+  // failures is evidence, not proof, and a search that only ever moves one
+  // gene stops exploring the rest of the genome.
+  const BIAS_GENE = { loA: 0, widthA: 1, duck: 2, ttcLo: 13, wideAdj: 8 };
+  let pick = Math.floor(rnd() * 18);
+  const biasIdx = bias && BIAS_GENE[bias.gene];
+  const biasApplies = bias && biasIdx !== undefined && rnd() < 0.5;
+  if (biasApplies) pick = biasIdx;
+  // STEP SIGN. Symmetric by default. When this mutation is the one the
+  // diagnosis asked for, draw the magnitude randomly but force the
+  // direction the measurement indicates - otherwise a measured "survivals
+  // took off 104px further out" had a 50% chance of being applied backwards.
+  const dir = biasApplies ? bias.sign : 0;
+  const nudge = () => {
+    const mag = Math.abs((rnd() - 0.5) * 30 * scale);
+    return Math.round(dir ? dir * mag : (rnd() - 0.5) * 30 * scale);
+  };
   const slope = () => +((rnd() - 0.5) * 4 * scale).toFixed(2);
   if (pick === 0) n.loA = n.loA + nudge();
   else if (pick === 1) n.widthA = n.widthA + nudge();
@@ -421,7 +443,12 @@ const ELITE = 4;
  * which population-wide breeding did not have - there a good genome could be
  * diluted by unrelated candidates and nothing guaranteed reversion.
  */
-export function nextCandidate() {
+/**
+ * @param bias optional { gene, sign } from Analysis.mutationBias(). Passed in
+ *   rather than imported so evolve.js keeps no dependency on the telemetry
+ *   store; absent, the mutation is uniformly random exactly as before.
+ */
+export function nextCandidate(bias) {
   // first run of a session: the champion IS the candidate
   if (!S.champion) {
     const g = randomGenome(rnd);
@@ -443,7 +470,7 @@ export function nextCandidate() {
   }
 
   // propose a challenger: champion + one mutation
-  const mutated = mutate(S.champion.g, rnd);
+  const mutated = mutate(S.champion.g, rnd, bias);
   const edition = changeHash(S.champion.g, mutated);
   S.challenger = {
     g: mutated,

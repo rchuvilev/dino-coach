@@ -129,3 +129,59 @@ export function correctionFor(store, state) {
     confidence: top.weight,
   };
 }
+
+/**
+ * Which gene to mutate, and WHICH WAY, from measured failures.
+ *
+ * diagnose() already produces the signal - per situation, the median of a
+ * property among survivals against its median among failures - and until now
+ * nothing consumed it. mutate() picked a gene uniformly at random and chose
+ * the sign of every nudge with a coin flip, so a measured "survivals took off
+ * 104px further out than failures" had exactly a 50% chance of being applied
+ * backwards.
+ *
+ * Returns { gene, sign, delta, confidence } or null. NULL IS THE COMMON CASE
+ * and must stay cheap: measured on live data, four of six situations have
+ * zero failures, so there is nothing to infer and the search should remain
+ * random rather than invent a direction.
+ *
+ * @param store  the Analysis store
+ * @param rnd    optional RNG, used only to break ties between equal signals
+ */
+export function mutationBias(store, rnd) {
+  if (!store || typeof store !== "object") return null;
+
+  // Map a measured property to the gene that moves it. Only properties with
+  // an unambiguous gene are actionable: `speed` is set by the game, not by
+  // the policy, so a speed difference is a description of when we die, not
+  // an instruction.
+  const GENE_FOR = {
+    takeoffGap: "loA",     // where the jump window opens
+    ttc: "ttcLo",          // same idea expressed in frames-to-impact
+    targetWidth: "wideAdj", // failures on wider obstacles -> widen the allowance
+  };
+
+  let best = null;
+  for (const state of states(store)) {
+    for (const d of diagnose(store, state)) {
+      const gene = GENE_FOR[d.prop];
+      if (!gene) continue;
+      // `delta` is okMedian - failMedian. Positive means survivals had the
+      // LARGER value, so push the gene up; negative pushes it down.
+      // targetWidth inverts: a negative delta means failures were on WIDER
+      // obstacles, which calls for a LARGER allowance.
+      const sign = d.prop === "targetWidth"
+        ? (d.delta < 0 ? 1 : -1)
+        : (d.delta > 0 ? 1 : -1);
+      const strength = Math.abs(d.delta) * d.weight;
+      if (!best || strength > best.strength) {
+        best = { gene, sign, delta: d.delta, confidence: d.weight, state,
+                 prop: d.prop, strength };
+      }
+    }
+  }
+  if (!best) return null;
+  if (rnd) void rnd;   // reserved for tie-breaking; deterministic today
+  return { gene: best.gene, sign: best.sign, delta: best.delta,
+           confidence: best.confidence, state: best.state, prop: best.prop };
+}

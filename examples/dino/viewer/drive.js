@@ -418,7 +418,10 @@ function decide(s, g) {
 
 /** Pick the model for the next run: champion, or champion + one change. */
 function pickCandidate() {
-  current = nextCandidate();
+  // Feed measured failures into the mutation: which gene, and which way.
+  // Null whenever no situation has enough failures to diagnose, which is
+  // the common case and leaves the search uniformly random.
+  current = nextCandidate(Analysis.mutationBias(analysis));
   return current;
 }
 

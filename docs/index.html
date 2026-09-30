@@ -1464,12 +1464,13 @@ var isEmbed = (typeof window !== 'undefined' && (window.isEmbed === true || (win
             }
         },
         onVisibilityChange: function(e) {
-            if (document.hidden || document.webkitHidden || e.type == 'blur') {
-                this.stop()
-            } else if (!this.crashed) {
-                this.tRex.reset();
-                this.play()
-            }
+            // PATCHED: the harness drives the clock itself and must keep
+            // evolving while the tab is hidden, scrolled away or blurred.
+            // Upstream stopped the game on blur AND called tRex.reset() on
+            // return, which does not merely pause a run - it resets the dino
+            // mid-episode, corrupting the very result being measured.
+            // The harness stops the loop explicitly via its own Stop button.
+            return;
         },
         playSound: function(soundBuffer) {
             if (soundBuffer && (this.soundEnabled !== false)) {
@@ -5334,6 +5335,43 @@ if (typeof window !== "undefined") {
     }
   };
 }
+var salvaged = false;
+function salvageInProgress() {
+  if (salvaged || !running)
+    return;
+  salvaged = true;
+  try {
+    const s = read();
+    if (!s || s.crashed)
+      return;
+    const dist = Math.max(0, s.distance - epStart);
+    const pts = Math.round(dist * 0.025);
+    if (pts < 50)
+      return;
+    const cand = current ? { g: current.g } : pop[idx];
+    recordEpisode(cand, dist, pop, bandDist, { ...tel || newTel(), cause: "unloaded" });
+    const verdict = current ? judgeRun(current.role, pts) : null;
+    if (verdict) {
+      const c = verdict.champion;
+      log(`${c.edition || "initial"} · ${pts}pts (unloaded mid-run)` + (verdict.promoted ? " · PROMOTED" : ""), "episode", {
+        edition: c.edition || "initial",
+        hash: c.hash,
+        best: c.best,
+        runs: c.runs,
+        result: pts,
+        promoted: verdict.promoted,
+        unloaded: true
+      });
+    }
+    saveAnalysis();
+    saveLogs();
+    try {
+      syncNow(log, true);
+    } catch {}
+  } catch {}
+}
+window.addEventListener("pagehide", salvageInProgress);
+window.addEventListener("beforeunload", salvageInProgress);
 var sharedReady = null;
 $("run").onclick = async () => {
   if (sharedReady) {

@@ -80,7 +80,27 @@
                          xhrSet.send();
  
                          if (typeof window.updateBestScore === 'function') {
-@@ -907,8 +931,15 @@
+@@ -839,12 +863,13 @@
+             }
+         },
+         onVisibilityChange: function(e) {
+-            if (document.hidden || document.webkitHidden || e.type == 'blur') {
+-                this.stop()
+-            } else if (!this.crashed) {
+-                this.tRex.reset();
+-                this.play()
+-            }
++            // PATCHED: the harness drives the clock itself and must keep
++            // evolving while the tab is hidden, scrolled away or blurred.
++            // Upstream stopped the game on blur AND called tRex.reset() on
++            // return, which does not merely pause a run - it resets the dino
++            // mid-episode, corrupting the very result being measured.
++            // The harness stops the loop explicitly via its own Stop button.
++            return;
+         },
+         playSound: function(soundBuffer) {
+             if (soundBuffer && (this.soundEnabled !== false)) {
+@@ -907,8 +932,15 @@
      }
  
      function getTimeStamp() {
@@ -98,7 +118,7 @@
      }
  
      function GameOverPanel(canvas, textImgPos, restartImgPos, dimensions) {
-@@ -1442,6 +1473,9 @@
+@@ -1442,6 +1474,9 @@
          update: function(deltaTime, distance) {
              var paint = true;
              var playSound = false;
@@ -108,7 +128,7 @@
              if (!this.acheivement) {
                  distance = this.getActualDistance(distance);
                  if (distance > this.maxScore && this.maxScoreUnits == this.config.MAX_DISTANCE_UNITS) {
-@@ -1481,6 +1515,31 @@
+@@ -1481,6 +1516,31 @@
                      this.draw(i, parseInt(this.digits[i]))
                  }
              }
@@ -140,7 +160,7 @@
              this.drawHighScore();
              return playSound
          },
-@@ -1494,8 +1553,20 @@
+@@ -1494,8 +1554,20 @@
          },
          setHighScore: function(distance) {
              distance = this.getActualDistance(distance);

@@ -1423,6 +1423,58 @@ if (typeof window !== "undefined") {
   };
 }
 
+
+/**
+ * SALVAGE AN IN-PROGRESS RUN ON UNLOAD.
+ *
+ * A run that is going well when the tab closes was previously thrown away
+ * entirely: recordEpisode/judgeRun only fire on a crash or the frame cap, so
+ * closing during the best run of a session lost exactly that run.
+ *
+ * This records the distance achieved SO FAR and judges it like any other
+ * result. It is deliberately conservative: a partial run is a LOWER BOUND on
+ * what the genome would have scored, so recording it can only under-state a
+ * candidate, never inflate one.
+ *
+ * Runs on pagehide (which fires when a tab is swiped away or bfcached, where
+ * beforeunload does not) and on beforeunload as a desktop fallback. Guarded
+ * so the two cannot double-record.
+ */
+let salvaged = false;
+function salvageInProgress() {
+  if (salvaged || !running) return;
+  salvaged = true;
+  try {
+    const s = read();
+    if (!s || s.crashed) return;               // a crash already recorded it
+    const dist = Math.max(0, s.distance - epStart);
+    const pts = Math.round(dist * 0.025);
+    // Below a few seconds of play there is no signal, only noise.
+    if (pts < 50) return;
+    const cand = current ? { g: current.g } : pop[idx];
+    recordEpisode(cand, dist, pop, bandDist, { ...(tel || newTel()), cause: "unloaded" });
+    const verdict = current ? judgeRun(current.role, pts) : null;
+    if (verdict) {
+      const c = verdict.champion;
+      log(
+        `${c.edition || "initial"} · ${pts}pts (unloaded mid-run)` +
+          (verdict.promoted ? " · PROMOTED" : ""),
+        "episode",
+        { edition: c.edition || "initial", hash: c.hash, best: c.best,
+          runs: c.runs, result: pts, promoted: verdict.promoted, unloaded: true },
+      );
+    }
+    // judgeRun() persists the evolve state internally; analysis and logs
+    // are ours to flush.
+    saveAnalysis();
+    saveLogs();
+    // Publish with keepalive so the request outlives the page.
+    try { share.syncNow(log, true); } catch { /* never block unload */ }
+  } catch { /* unload must never throw */ }
+}
+window.addEventListener("pagehide", salvageInProgress);
+window.addEventListener("beforeunload", salvageInProgress);
+
 let sharedReady = null;
 
 $("run").onclick = async () => {

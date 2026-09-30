@@ -311,7 +311,7 @@ function decide(s, g) {
   if (g.always) return { action: "jump", rule: 0 };
   // OPTION A: the window is resolved from the CURRENT speed, so one genome
   // expresses a different takeoff distance early and late in the run.
-  let w = windowAt(g, s.speed);
+  let w = windowAt(g, s.speed, s.width);
   // stash for captureSituation: lets a failure be described as "took off 8px
   // outside the window" rather than just "failed"
   // apply what previous failures taught about THIS situation
@@ -455,7 +455,9 @@ function candName(c) {
 
 function renderRules(fired, s, g) {
   const has = s && s.gap < 99999;
-  const w = g.never || g.always ? { lo: -1, hi: -1 } : windowAt(g, s ? s.speed : 6);
+  const w = g.never || g.always
+    ? { lo: -1, hi: -1 }
+    : windowAt(g, s ? s.speed : 6, s ? s.width : undefined);
   const rows = [
     { when: `gap ${Math.round(w.lo)}..${Math.round(w.hi)} @spd${s ? s.speed.toFixed(1) : "?"}`, then: "jump" },
     { when: `high & gap<=${g.duck}`, then: "duck" },
@@ -696,7 +698,7 @@ function overlay(s, g) {
   const top = oy0;
   // takeoff window of the ACTIVE genome
   if (g && !g.never && !g.always) {
-    let w = windowAt(g, s.speed);
+    let w = windowAt(g, s.speed, s.width);
   // stash for captureSituation: lets a failure be described as "took off 8px
   // outside the window" rather than just "failed"
   // apply what previous failures taught about THIS situation

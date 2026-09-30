@@ -47,6 +47,7 @@ function clampGenome(g) {
   g.ttcPanic = Math.min(6, Math.max(0, g.ttcPanic === undefined ? 3 : g.ttcPanic));
   g.mlpVeto = Math.min(0.45, Math.max(0, g.mlpVeto === undefined ? 0.25 : g.mlpVeto));
   g.mlpRescue = Math.min(0.99, Math.max(0.55, g.mlpRescue === undefined ? 0.8 : g.mlpRescue));
+  g.widthGain = Math.min(1.2, Math.max(0, g.widthGain === undefined ? 0.45 : g.widthGain));
   if (!g.ctxAdj) g.ctxAdj = {};
   return g;
 }
@@ -68,6 +69,10 @@ function randomGenome(rnd) {
     // only appear in runs that survive that long - measured 5 of 10 runs for
     // a strong genome. The duck gene therefore looks like dead code until a
     // policy is good enough to reach them.
+    // How strongly obstacle SIZE moves the takeoff window. 0 reproduces the
+    // old size-blind behaviour exactly, so the richer space contains the
+    // previous one and cannot score worse given enough search.
+    widthGain: +(rnd() * 0.9).toFixed(2),
     duck: Math.round(rnd() * 90),             // wide range, GA decides
     // rule order: which check wins when several match
     duckFirst: rnd() < 0.5,
@@ -124,7 +129,7 @@ export function bandOf(speed) {
 }
 
 /** Resolve the genome at a given speed. This is the whole of option A. */
-export function windowAt(g, speed) {
+export function windowAt(g, speed, obsWidth) {
   const d = (speed || 6) - 6;
   // OPTION B: a per-band offset layered on the speed-linear base. Offsets of
   // zero reduce exactly to option A, so the richer space CONTAINS it and
@@ -140,6 +145,26 @@ export function windowAt(g, speed) {
   if (!Number.isFinite(lo) || !Number.isFinite(width)) {
     lo = 30;
     width = 30;
+  }
+  // OBSTACLE SIZE. `wideAdj` shifted both edges equally, so the window MOVED
+  // with obstacle size but never RESIZED: measured on a live champion, 51px
+  // wide for a 17px cactus and 51px for a 75px cluster at speed 6. A wide
+  // obstacle needs more air time to clear, which is a different amount of
+  // window, not the same window further out.
+  //
+  // Reference width 17 (CACTUS_SMALL) is the no-op point, so a genome tuned
+  // before this change behaves identically on small cacti. widthGain is a
+  // genome axis, so the GA decides how much size should matter rather than
+  // this constant deciding for it.
+  if (Number.isFinite(obsWidth) && obsWidth > 0) {
+    const excess = obsWidth - 17;
+    const gain = Number.isFinite(g.widthGain) ? g.widthGain : 0.45;
+    // open earlier for a bigger obstacle...
+    lo += excess * gain;
+    // ...and allow proportionally more room, since the clearance envelope
+    // itself is larger. Half the gain: the opening edge matters more than
+    // the closing one, because a late takeoff is the dominant failure.
+    width += excess * gain * 0.5;
   }
   lo = Math.min(LO_MAX, Math.max(LO_MIN, lo));
   width = Math.min(HI_MAX - lo, Math.max(10, width));
@@ -249,6 +274,9 @@ function mutate(g, rnd, bias) {
     n.ttcPanic = +Math.max(0, Math.min(6, (n.ttcPanic || 3) + (rnd() - 0.5) * 2 * scale)).toFixed(1);
   } else if (pick === 16) {
     n.mlpVeto = +Math.max(0, Math.min(0.45, (n.mlpVeto ?? 0.25) + (rnd() - 0.5) * 0.2 * scale)).toFixed(2);
+  } else if (pick === 5) {
+    n.widthGain = +Math.max(0, Math.min(1.2,
+      (n.widthGain === undefined ? 0.45 : n.widthGain) + (rnd() - 0.5) * 0.4 * scale)).toFixed(2);
   } else if (pick === 17) {
     n.mlpRescue = +Math.max(0.55, Math.min(0.99, (n.mlpRescue ?? 0.8) + (rnd() - 0.5) * 0.2 * scale)).toFixed(2);
   } else {
@@ -312,6 +340,10 @@ function blank() {
 
 /** Upgrade a genome written by an older schema. */
 function migrateGenome(g) {
+  // Genomes saved before widthGain existed must get the documented default
+  // rather than undefined, which would read as 0.45 in windowAt but NaN in
+  // any arithmetic that touches it directly.
+  if (g && typeof g === "object" && !Number.isFinite(g.widthGain)) g.widthGain = 0.45;
   if (!g || typeof g !== "object") return null;
   if (g.ctrl || g.never || g.always) return g;
   if (g.loA !== undefined) {
@@ -368,6 +400,13 @@ function migrate(S) {
   if (!Array.isArray(S.ledger)) S.ledger = [];
   if (!Array.isArray(S.population)) S.population = [];
   S.inProgress = S.inProgress ? fix(S.inProgress) : null;
+  // THE CHAMPION IS THE GENOME THAT ACTUALLY PLAYS, and it was the only one
+  // migrate() never touched. Measured: after adding widthGain, a champion
+  // adopted from the shared pool (published before the axis existed) had no
+  // widthGain at all, while the in-progress population had 0.33/0.77 - so
+  // the new axis was silently dead on exactly the genome using it.
+  if (S.champion && S.champion.g) S.champion.g = migrateGenome(S.champion.g);
+  if (S.challenger && S.challenger.g) S.challenger.g = migrateGenome(S.challenger.g);
   if (S.bestGenome) S.bestGenome = migrateGenome(S.bestGenome);
   return S;
 }
@@ -982,8 +1021,22 @@ export function fitnessOf(c) {
   // clearance rates are direct evidence the policy HANDLES a class
   const wideBonus = t.wideClearRate === null || t.wideClearRate === undefined ? 0 : t.wideClearRate;
   const birdBonus = t.birdClearRate === null || t.birdClearRate === undefined ? 0 : t.birdClearRate;
+  // PRECISION. Outcome-only scoring gave a 90px window exactly the same
+  // fitness as a 20px one, and a wide window is MORE robust to speed jitter,
+  // so selection actively favoured imprecision - a better-learned policy had
+  // no way to express itself as a sharper window.
+  //
+  // Deliberately tiny (max 4%) and applied last: this is a tie-breaker among
+  // genomes that already survive, never a reason to prefer a worse score.
+  // The test suite asserts a 2x score difference still dominates it.
+  const w = c.g ? windowAt(c.g, 9) : null;
+  const span = w ? w.hi - w.lo : null;
+  // 20px is treated as "sharp"; 120px as "sloppy". Linear between.
+  const precision = span === null ? 0
+    : Math.max(0, Math.min(1, (120 - span) / 100));
   // multiplicative, so it scales with the score rather than swamping it
-  const factor = 1 - 0.25 * missed - 0.10 * early + 0.08 * wideBonus + 0.05 * birdBonus;
+  const factor = 1 - 0.25 * missed - 0.10 * early + 0.08 * wideBonus
+    + 0.05 * birdBonus + 0.04 * precision;
   return Math.round(base * Math.max(0.5, Math.min(1.25, factor)));
 }
 

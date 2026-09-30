@@ -1150,3 +1150,26 @@ export function closeGeneration(pop) {
   save(S);
   return { best: evolved[0], bestCtrl };
 }
+
+/**
+ * Frames a single episode may run before it is cut short.
+ *
+ * 🔴 The old value, 9000, imposed a hidden SCORE CEILING. Points are
+ * distance * 0.025 and distance accrues about `currentSpeed` px per frame,
+ * so at the terminal speed of 13 the ceiling was 9000 * 13 * 0.025 = 2925
+ * points. Measured on a live profile, bestEver was EXACTLY 2925 - on the
+ * ceiling, not near it. A user reporting lost 5000+ runs was right: such a
+ * score could not be recorded however well the agent played.
+ *
+ * The cap must still exist - one immortal genome would otherwise stall its
+ * whole generation forever - but it should bound WALL CLOCK, not achievement.
+ * 40000 frames puts the ceiling at 13000 points at terminal speed, far above
+ * anything observed, while still ending a stuck run in bounded time.
+ */
+export const EP_FRAME_CAP = 40000;
+
+/** Highest score an episode can reach before the cap ends it, at a speed. */
+export function capPointsAt(speed) {
+  const v = Number.isFinite(speed) && speed > 0 ? speed : 6;
+  return Math.round(EP_FRAME_CAP * v * 0.025);
+}

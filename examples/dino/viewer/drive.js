@@ -41,6 +41,7 @@ import {
   slotInfo,
   windowAt,
   reloadFromStorage,
+  EP_FRAME_CAP,
 } from "./evolve.js";
 
 const CLOCK = window.__CLOCK;
@@ -935,9 +936,8 @@ function newTel() {
 }
 let bandDist = BANDS.map(() => 0);   // distance travelled per speed band
 let lastDist = 0;
-const EP_FRAME_CAP = 9000;  // ~150s of game time; beyond this the candidate
-                            // is clearly strong and further frames add no
-                            // ranking information, only wall-clock delay.
+// EP_FRAME_CAP lives in evolve.js so the score ceiling it implies is
+// testable. The old local value of 9000 capped achievable points at 2925.
 
 function frame() {
   if (!running) return;
@@ -956,7 +956,34 @@ function frame() {
     tel = newTel();
     bandDist = BANDS.map(() => 0);
     lastDist = 0;
-    log(`${candName(cand)} -> ${dist} (capped)`);
+    // 🔴 A CAPPED RUN IS STILL A RESULT. This path recorded the episode but
+    // never called judgeRun(), which is what writes the ledger row - so the
+    // best runs in a session (the ones good enough to hit the cap) were the
+    // only ones absent from the table and could never be promoted or
+    // published. Judge it exactly like a crash.
+    const cappedPts = Math.round(dist * 0.025);
+    const cappedVerdict = current ? judgeRun(current.role, cappedPts) : null;
+    if (cappedVerdict) {
+      const cc = cappedVerdict.champion;
+      log(
+        `${cc.edition || "initial"} · avg ${cc.mean || cc.best}pts · best ${cc.best}pts · runs ${cc.runs}` +
+          (cappedVerdict.promoted ? " · PROMOTED (capped)" : ` · tried ${cappedPts}pts (capped)`),
+        "episode",
+        { edition: cc.edition || "initial", hash: cc.hash, best: cc.best,
+          runs: cc.runs, result: cappedPts, promoted: cappedVerdict.promoted,
+          capped: true },
+      );
+      if (cappedVerdict.promoted) {
+        share.syncNow(log, true).then((r) => {
+          if (!r) return;
+          if (r.ok && r.why === "published") notePool("published", r);
+          else if (r.ok) notePool("adopted", r);
+        }).catch(() => { /* never interrupt evolution */ });
+      }
+    } else {
+      log(`${candName(cand)} -> ${dist} (capped)`);
+    }
+    epInCand++;
     tableDirty = true;
     epFrames = 0;
     restartEpisode();
